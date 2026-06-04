@@ -1,9 +1,17 @@
+import logging
 import os
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════
 #  機密資訊（從 .env 載入）
@@ -19,9 +27,9 @@ if not DISCORD_TOKEN:
 if not FUGLE_API_KEY:
     raise SystemExit("[FATAL] FUGLE_API_KEY 未設定，請檢查 .env 檔案")
 if not NEWS_CHANNEL_ID:
-    print("[WARN] NEWS_CHANNEL_ID 未設定，新聞推播功能將無法運作")
+    logger.warning("NEWS_CHANNEL_ID 未設定，新聞推播功能將無法運作")
 if not ALERT_CHANNEL_ID:
-    print("[WARN] ALERT_CHANNEL_ID 未設定，警示推播功能將無法運作")
+    logger.warning("ALERT_CHANNEL_ID 未設定，警示推播功能將無法運作")
 
 # ════════════════════════════════════════════════════════
 #  時區
@@ -66,4 +74,15 @@ BREAKING_KEYWORDS = [
     "緊急", "重大", "停牌", "下市", "暫停交易", "Fed", "升息", "降息",
     "央行", "地震", "戰爭", "制裁", "爆發", "倒閉", "破產", "財報",
 ]
+
+# ════════════════════════════════════════════════════════
+#  業務限制
+# ════════════════════════════════════════════════════════
+
+MAX_ALERTS_PER_SYMBOL = 3
+MAX_WATCHLIST_SIZE = 10
+VOLATILITY_THRESHOLD_PCT = 3.0
+PAGE_SIZE = 15
+HISTORY_DISPLAY_LIMIT = 20
+MAX_COMPARE_SYMBOLS = 5
 
