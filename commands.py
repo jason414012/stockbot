@@ -1,66 +1,32 @@
+import logging
+from datetime import date
+
 import discord
 from discord import app_commands
-import pandas as pd
-import unicodedata
-from datetime import date
+
+logger = logging.getLogger(__name__)
 
 import state
 from state import bot
 from db import (
-    _db_add, _db_remove, _db_clear,
-    _db_add_alert, _db_remove_alert, _db_list_alerts,
-    _db_add_transaction, _db_list_transactions, _db_list_all_transactions,
-    _db_get_position, _db_upsert_position,
-    _db_remove_position, _db_remove_all_positions, _db_list_positions,
+    add_watchlist, remove_watchlist, clear_watchlist,
+    add_alert, remove_alert, list_user_alerts,
+    add_transaction, list_transactions, list_all_transactions,
+    get_position, upsert_position,
+    remove_position, remove_all_positions, list_positions,
 )
 from data import (
     get_stock_info, search_by_name, format_value,
     get_sector_data, calculate_fee, calculate_tax,
 )
 from news import fetch_latest_news, build_news_embed
+from display import format_table
+from config import (
+    MAX_ALERTS_PER_SYMBOL, MAX_WATCHLIST_SIZE, PAGE_SIZE,
+    HISTORY_DISPLAY_LIMIT, MAX_COMPARE_SYMBOLS,
+)
 
 import re as _re
-
-
-def _dw(s: str) -> int:
-    """CJK-aware 顯示寬度（全形字元算 2）。"""
-    return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
-
-def _rpad(s: str, w: int) -> str:
-    return s + ' ' * max(0, w - _dw(s))
-
-def _lpad(s: str, w: int) -> str:
-    return ' ' * max(0, w - _dw(s)) + s
-
-
-def _format_table(rows: list[dict], right_cols: set[str] | None = None) -> str:
-    """CJK-aware monospace table formatter.
-    right_cols: column names that should be right-aligned (default: all except first two).
-    """
-    if not rows:
-        return ""
-    cols = list(rows[0].keys())
-    if right_cols is None:
-        right_cols = set(cols[2:])
-    # convert every cell to str
-    str_rows = [{c: str(r[c]) for c in cols} for r in rows]
-    # compute max display width per column (header vs data)
-    widths = {c: _dw(c) for c in cols}
-    for r in str_rows:
-        for c in cols:
-            widths[c] = max(widths[c], _dw(r[c]))
-    # build header + separator + data lines
-    header = "  ".join(
-        (_lpad(c, widths[c]) if c in right_cols else _rpad(c, widths[c])) for c in cols
-    )
-    sep = "─" * _dw(header)
-    data_lines = []
-    for r in str_rows:
-        line = "  ".join(
-            (_lpad(r[c], widths[c]) if c in right_cols else _rpad(r[c], widths[c])) for c in cols
-        )
-        data_lines.append(line)
-    return "\n".join([header, sep] + data_lines)
 
 
 def _looks_like_symbol(text: str) -> bool:
@@ -68,30 +34,17 @@ def _looks_like_symbol(text: str) -> bool:
     return bool(_re.fullmatch(r'\d+', text) or _re.fullmatch(r'IX\d+', text, _re.IGNORECASE))
 
 
-class SearchPageView(discord.ui.View):
-    """搜尋結果翻頁按鈕，每頁顯示 PAGE_SIZE 筆。"""
-    PAGE_SIZE = 15
+class PageView(discord.ui.View):
+    """分頁按鈕基底類別，子類別只需實作 _build_content()。"""
 
-    def __init__(self, keyword: str, rows: list[dict]):
+    def __init__(self, total_items: int):
         super().__init__(timeout=120)
-        self.keyword = keyword
-        self.rows = rows
         self.page = 0
-        self.total_pages = max(1, -(-len(rows) // self.PAGE_SIZE))
+        self.total_pages = max(1, -(-total_items // PAGE_SIZE))
         self._refresh_buttons()
 
     def _build_content(self) -> str:
-        start = self.page * self.PAGE_SIZE
-        chunk = self.rows[start: start + self.PAGE_SIZE]
-        lines = "代號　　名稱\n" + "─" * 20 + "\n"
-        lines += "\n".join(f"`{r['symbol']}`　{r['name']}" for r in chunk)
-        total = len(self.rows)
-        return (
-            f"🔍 **「{self.keyword}」共 {total} 筆結果**　"
-            f"（第 {self.page + 1} / {self.total_pages} 頁）\n"
-            f"{lines}\n\n"
-            "輸入 `/q 代號` 查詢詳細資訊，例如：`/q 2330`"
-        )
+        raise NotImplementedError
 
     def _refresh_buttons(self):
         self.prev_btn.disabled = self.page == 0
@@ -110,16 +63,34 @@ class SearchPageView(discord.ui.View):
         await interaction.response.edit_message(content=self._build_content(), view=self)
 
 
+class SearchPageView(PageView):
+
+    def __init__(self, keyword: str, rows: list[dict]):
+        self.keyword = keyword
+        self.rows = rows
+        super().__init__(len(rows))
+
+    def _build_content(self) -> str:
+        start = self.page * PAGE_SIZE
+        chunk = self.rows[start: start + PAGE_SIZE]
+        lines = "代號　　名稱\n" + "─" * 20 + "\n"
+        lines += "\n".join(f"`{r['symbol']}`　{r['name']}" for r in chunk)
+        return (
+            f"🔍 **「{self.keyword}」共 {len(self.rows)} 筆結果**　"
+            f"（第 {self.page + 1} / {self.total_pages} 頁）\n"
+            f"{lines}\n\n"
+            "輸入 `/q 代號` 查詢詳細資訊，例如：`/q 2330`"
+        )
+
+
 # ════════════════════════════════════════════════════════
 #  /q  查詢股票（代號或名稱關鍵字皆可）
 # ════════════════════════════════════════════════════════
 
 
-def _build_quote_embed(info: dict) -> discord.Embed:
+def _add_quote_field(embed: discord.Embed, info: dict):
     sym = info["symbol"]
     arrow = "🔺" if info["change"] >= 0 else "🔻"
-    embed = discord.Embed(title="📊 股票查詢", color=discord.Color.blue())
-
     if info.get("is_index"):
         embed.add_field(
             name=f'{info["name"]}（{sym}）',
@@ -143,6 +114,11 @@ def _build_quote_embed(info: dict) -> discord.Embed:
             ),
             inline=True,
         )
+
+
+def _build_quote_embed(info: dict) -> discord.Embed:
+    embed = discord.Embed(title="📊 股票查詢", color=discord.Color.blue())
+    _add_quote_field(embed, info)
     return embed
 
 
@@ -156,7 +132,7 @@ async def cmd_quote(interaction: discord.Interaction, query: str):
             info = get_stock_info(query)
             await interaction.followup.send(embed=_build_quote_embed(info))
         except Exception as e:
-            print(f"[WARN] /q {query} 查詢失敗：{e}")
+            logger.warning("/q %s 查詢失敗：%s", query, e)
             await interaction.followup.send(
                 f"查無代號 `{query}`，請確認是否正確。\n"
                 "也可以輸入公司名稱關鍵字，例如：`/q 台積電`"
@@ -176,7 +152,7 @@ async def cmd_quote(interaction: discord.Interaction, query: str):
                 view = SearchPageView(query, rows)
                 await interaction.followup.send(content=view._build_content(), view=view)
         except Exception as e:
-            print(f"[WARN] /q 搜尋 {query} 失敗：{e}")
+            logger.warning("/q 搜尋 %s 失敗：%s", query, e)
             await interaction.followup.send("搜尋時發生錯誤，請稍後再試！")
 
 
@@ -192,8 +168,8 @@ async def cmd_compare(interaction: discord.Interaction, symbols: str):
     if not sym_list:
         await interaction.response.send_message("請至少輸入一個股票代號，例如：`/symbol 2330 2454`")
         return
-    if len(sym_list) > 5:
-        await interaction.response.send_message("一次最多比較 5 檔，請重新輸入！")
+    if len(sym_list) > MAX_COMPARE_SYMBOLS:
+        await interaction.response.send_message(f"一次最多比較 {MAX_COMPARE_SYMBOLS} 檔，請重新輸入！")
         return
 
     await interaction.response.defer()
@@ -220,15 +196,15 @@ async def cmd_compare(interaction: discord.Interaction, symbols: str):
                     "成交額":    format_value(info["value"]),
                 })
         except Exception as e:
-            print(f"[WARN] /symbol {sym} 查詢失敗：{e}")
+            logger.warning("/symbol %s 查詢失敗：%s", sym, e)
             errors.append(sym.upper())
 
     sent_any = False
     if stock_rows:
-        await interaction.followup.send(f"```{_format_table(stock_rows)}```")
+        await interaction.followup.send(f"```{format_table(stock_rows)}```")
         sent_any = True
     if index_rows:
-        await interaction.followup.send(f"```{_format_table(index_rows)}```")
+        await interaction.followup.send(f"```{format_table(index_rows)}```")
         sent_any = True
     if errors:
         await interaction.followup.send(f'⚠️ 以下代號查無資料：{", ".join(errors)}')
@@ -260,12 +236,12 @@ async def alert_set(interaction: discord.Interaction, sym: str, target: float):
     direction = "above" if target > cur else "below"
     dir_str   = f"突破 `{target}`" if direction == "above" else f"跌破 `{target}`"
 
-    existing = [a for a in _db_list_alerts(interaction.user.id) if a["symbol"] == sym]
-    if len(existing) >= 3:
-        await interaction.followup.send(f"`{sym}` 警示已達上限（3 個），請先刪除後再設定。")
+    existing = [a for a in list_user_alerts(interaction.user.id) if a["symbol"] == sym]
+    if len(existing) >= MAX_ALERTS_PER_SYMBOL:
+        await interaction.followup.send(f"`{sym}` 警示已達上限（{MAX_ALERTS_PER_SYMBOL} 個），請先刪除後再設定。")
         return
 
-    _db_add_alert(interaction.user.id, sym, target, direction)
+    add_alert(interaction.user.id, sym, target, direction)
     await interaction.followup.send(
         f"✅ 已設定警示！`{sym}` {dir_str} 時將 DM 通知您。\n"
         f"目前值：`{cur}`"
@@ -274,7 +250,7 @@ async def alert_set(interaction: discord.Interaction, sym: str, target: float):
 
 @alert_group.command(name="list", description="查看我的價格警示清單")
 async def alert_list(interaction: discord.Interaction):
-    alerts = _db_list_alerts(interaction.user.id)
+    alerts = list_user_alerts(interaction.user.id)
     if not alerts:
         await interaction.response.send_message("您目前沒有設定任何價格警示。")
         return
@@ -288,7 +264,7 @@ async def alert_list(interaction: discord.Interaction):
 @alert_group.command(name="remove", description="刪除指定警示")
 @app_commands.describe(alert_id="警示編號（用 /alert list 查詢）")
 async def alert_remove(interaction: discord.Interaction, alert_id: int):
-    if _db_remove_alert(alert_id, interaction.user.id):
+    if remove_alert(alert_id, interaction.user.id):
         await interaction.response.send_message(f"🗑️ 已刪除警示 **#{alert_id}**。")
     else:
         await interaction.response.send_message(f"找不到警示 **#{alert_id}**，請用 `/alert list` 確認編號。")
@@ -307,12 +283,12 @@ watch_group = app_commands.Group(name="watch", description="自選股管理")
 async def watch_add(interaction: discord.Interaction, sym: str):
     sym = sym.upper()
     uid = interaction.user.id
-    state._watchlist.setdefault(uid, [])
-    if sym in state._watchlist[uid]:
+    state.watchlist.setdefault(uid, [])
+    if sym in state.watchlist[uid]:
         await interaction.response.send_message(f"`{sym}` 已在您的自選股清單中！")
         return
-    if len(state._watchlist[uid]) >= 10:
-        await interaction.response.send_message("自選股上限為 10 檔，請先移除部分股票再新增。")
+    if len(state.watchlist[uid]) >= MAX_WATCHLIST_SIZE:
+        await interaction.response.send_message(f"自選股上限為 {MAX_WATCHLIST_SIZE} 檔，請先移除部分股票再新增。")
         return
     await interaction.response.defer()
     try:
@@ -320,9 +296,9 @@ async def watch_add(interaction: discord.Interaction, sym: str):
     except Exception:
         await interaction.followup.send(f"查無代號 `{sym}`，請確認後再新增。")
         return
-    state._watchlist[uid].append(sym)
-    _db_add(uid, sym)
-    await interaction.followup.send(f"✅ `{sym}` 已加入您的自選股！目前共 {len(state._watchlist[uid])} 檔。")
+    state.watchlist[uid].append(sym)
+    add_watchlist(uid, sym)
+    await interaction.followup.send(f"✅ `{sym}` 已加入您的自選股！目前共 {len(state.watchlist[uid])} 檔。")
 
 
 @watch_group.command(name="remove", description="移除自選股")
@@ -330,19 +306,19 @@ async def watch_add(interaction: discord.Interaction, sym: str):
 async def watch_remove(interaction: discord.Interaction, sym: str):
     sym = sym.upper()
     uid = interaction.user.id
-    lst = state._watchlist.get(uid, [])
+    lst = state.watchlist.get(uid, [])
     if sym not in lst:
         await interaction.response.send_message(f"`{sym}` 不在您的自選股清單中！")
         return
     lst.remove(sym)
-    _db_remove(uid, sym)
+    remove_watchlist(uid, sym)
     await interaction.response.send_message(f"🗑️ `{sym}` 已從您的自選股移除。")
 
 
 @watch_group.command(name="list", description="查看自選股即時報價")
 async def watch_list(interaction: discord.Interaction):
     uid = interaction.user.id
-    lst = state._watchlist.get(uid, [])
+    lst = state.watchlist.get(uid, [])
     if not lst:
         await interaction.response.send_message("您的自選股清單是空的，請使用 `/watch add 代號` 新增。")
         return
@@ -353,33 +329,9 @@ async def watch_list(interaction: discord.Interaction):
     for sym in lst:
         try:
             info = get_stock_info(sym)
-            arrow = "🔺" if info["change"] >= 0 else "🔻"
-
-            if info.get("is_index"):
-                embed.add_field(
-                    name=f'{info["name"]}（{sym}）',
-                    value=(
-                        f'最新指數　`{info["price"]}`\n'
-                        f'漲跌　{arrow} `{info["change"]:+.2f}`\n'
-                        f'漲跌幅　{arrow} `{info["change_percent"]} %`'
-                    ),
-                    inline=True,
-                )
-            else:
-                val_str = format_value(info["value"])
-                embed.add_field(
-                    name=f'{info["name"]}（{sym}）',
-                    value=(
-                        f'最新價　`{info["price"]} 元`\n'
-                        f'漲跌　{arrow} `{info["change"]:+.2f} 元`\n'
-                        f'漲跌幅　{arrow} `{info["change_percent"]} %`\n'
-                        f'成交量　`{int(info["volume"])} 張`\n'
-                        f'成交額　`{val_str}`'
-                    ),
-                    inline=True,
-                )
+            _add_quote_field(embed, info)
         except Exception as e:
-            print(f"[WARN] /watch list {sym} 查詢失敗：{e}")
+            logger.warning("/watch list %s 查詢失敗：%s", sym, e)
             errors.append(sym)
 
     if embed.fields:
@@ -390,8 +342,8 @@ async def watch_list(interaction: discord.Interaction):
 
 @watch_group.command(name="clear", description="清空自選股清單")
 async def watch_clear(interaction: discord.Interaction):
-    state._watchlist[interaction.user.id] = []
-    _db_clear(interaction.user.id)
+    state.watchlist[interaction.user.id] = []
+    clear_watchlist(interaction.user.id)
     await interaction.response.send_message("✅ 已清空您的自選股清單。")
 
 
@@ -498,7 +450,7 @@ async def trade_buy(interaction: discord.Interaction, sym: str, price: float, sh
         return
 
     fee = calculate_fee(price, shares)
-    pos = _db_get_position(uid, sym)
+    pos = get_position(uid, sym)
 
     if pos is None or pos["shares"] == 0:
         new_avg = (price * shares + fee) / shares
@@ -510,8 +462,8 @@ async def trade_buy(interaction: discord.Interaction, sym: str, price: float, sh
         new_avg = (old_cost_total + price * shares + fee) / new_shares
         realized = pos["realized_pnl"]
 
-    _db_add_transaction(uid, sym, "buy", price, shares, tx_date, fee, 0)
-    _db_upsert_position(uid, sym, new_avg, new_shares, realized)
+    add_transaction(uid, sym, "buy", price, shares, tx_date, fee, 0)
+    upsert_position(uid, sym, new_avg, new_shares, realized)
 
     await interaction.followup.send(
         f"✅ **買入成功**　`{sym}`\n"
@@ -541,7 +493,7 @@ async def trade_sell(interaction: discord.Interaction, sym: str, price: float, s
         await interaction.response.send_message("賣出股數必須大於 0。", ephemeral=True)
         return
 
-    pos = _db_get_position(uid, sym)
+    pos = get_position(uid, sym)
     if pos is None or pos["shares"] == 0:
         await interaction.response.send_message(f"您目前沒有 `{sym}` 的持倉，無法賣出。", ephemeral=True)
         return
@@ -564,7 +516,7 @@ async def trade_sell(interaction: discord.Interaction, sym: str, price: float, s
     except Exception:
         is_etf = False
 
-    txs = _db_list_transactions(uid, sym)
+    txs = list_transactions(uid, sym)
     is_daytrade = any(t["type"] == "buy" and t["date"] == tx_date for t in txs)
 
     fee = calculate_fee(price, shares)
@@ -576,8 +528,8 @@ async def trade_sell(interaction: discord.Interaction, sym: str, price: float, s
     new_shares = pos["shares"] - shares
     new_realized = pos["realized_pnl"] + this_pnl
 
-    _db_add_transaction(uid, sym, "sell", price, shares, tx_date, fee, tax)
-    _db_upsert_position(uid, sym, new_avg, new_shares, new_realized)
+    add_transaction(uid, sym, "sell", price, shares, tx_date, fee, tax)
+    upsert_position(uid, sym, new_avg, new_shares, new_realized)
 
     if is_etf and is_daytrade:
         tax_label = "ETF 當沖 0.05%"
@@ -610,7 +562,7 @@ async def trade_profit(interaction: discord.Interaction, sym: str = None):
     uid = interaction.user.id
 
     if sym is None:
-        positions = _db_list_positions(uid)
+        positions = list_positions(uid)
         if not positions:
             await interaction.response.send_message(
                 "您目前沒有任何持倉紀錄，請用 `/trade buy 代號 價格 股數` 開始記錄。",
@@ -661,7 +613,7 @@ async def trade_profit(interaction: discord.Interaction, sym: str = None):
 
     else:
         sym = sym.upper()
-        pos = _db_get_position(uid, sym)
+        pos = get_position(uid, sym)
         if pos is None or (pos["shares"] == 0 and pos["realized_pnl"] == 0):
             await interaction.response.send_message(
                 f"`{sym}` 無持倉紀錄，請先使用 `/trade buy {sym} 價格 股數`。",
@@ -729,12 +681,12 @@ async def trade_history(interaction: discord.Interaction, sym: str = None):
     await interaction.response.defer(ephemeral=True)
 
     if sym is None:
-        txs = _db_list_all_transactions(uid)
+        txs = list_all_transactions(uid)
         if not txs:
             await interaction.followup.send("您目前沒有任何交易紀錄。", ephemeral=True)
             return
-        shown = txs[:20]
-        title = f"📋 全部交易明細（共 {len(txs)} 筆{'，顯示最近 20 筆' if len(txs) > 20 else ''}）"
+        shown = txs[:HISTORY_DISPLAY_LIMIT]
+        title = f"📋 全部交易明細（共 {len(txs)} 筆{'，顯示最近 %d 筆' % HISTORY_DISPLAY_LIMIT if len(txs) > HISTORY_DISPLAY_LIMIT else ''}）"
         unique_syms = list({t["symbol"] for t in shown})
         sym_names: dict[str, str] = {}
         for _s in unique_syms:
@@ -744,16 +696,16 @@ async def trade_history(interaction: discord.Interaction, sym: str = None):
                 sym_names[_s] = _s
     else:
         sym = sym.upper()
-        txs = _db_list_transactions(uid, sym)
+        txs = list_transactions(uid, sym)
         if not txs:
             await interaction.followup.send(f"`{sym}` 尚無交易紀錄。", ephemeral=True)
             return
-        shown = txs[:20]
+        shown = txs[:HISTORY_DISPLAY_LIMIT]
         try:
             sym_display = f'{get_stock_info(sym)["name"]}（{sym}）'
         except Exception:
             sym_display = sym
-        title = f"📋 {sym_display} 交易明細（共 {len(txs)} 筆{'，顯示最近 20 筆' if len(txs) > 20 else ''}）"
+        title = f"📋 {sym_display} 交易明細（共 {len(txs)} 筆{'，顯示最近 %d 筆' % HISTORY_DISPLAY_LIMIT if len(txs) > HISTORY_DISPLAY_LIMIT else ''}）"
         sym_names = {}
 
     embed = discord.Embed(title=title, color=discord.Color.blue())
@@ -790,10 +742,10 @@ class _ConfirmResetView(discord.ui.View):
             await interaction.response.send_message("這不是您的操作！", ephemeral=True)
             return
         if self.sym is None:
-            _db_remove_all_positions(self.uid)
+            remove_all_positions(self.uid)
             msg = "✅ 已清除您所有股票的交易紀錄與持倉資料。"
         else:
-            _db_remove_position(self.uid, self.sym)
+            remove_position(self.uid, self.sym)
             msg = f"✅ 已清除 `{self.sym}` 的所有交易紀錄與持倉資料。"
         self.stop()
         await interaction.response.edit_message(content=msg, view=None)
@@ -813,11 +765,11 @@ async def trade_reset(interaction: discord.Interaction, sym: str = None):
     uid = interaction.user.id
 
     if sym is None:
-        positions = _db_list_positions(uid)
+        positions = list_positions(uid)
         if not positions:
             await interaction.response.send_message("您目前沒有任何交易紀錄可清除。")
             return
-        total_txs = sum(len(_db_list_transactions(uid, p["symbol"])) for p in positions)
+        total_txs = sum(len(list_transactions(uid, p["symbol"])) for p in positions)
         view = _ConfirmResetView(uid, None)
         await interaction.response.send_message(
             f"⚠️ 確定要清除您 **所有股票**（共 {len(positions)} 檔）的持倉與 {total_txs} 筆交易紀錄？\n"
@@ -826,8 +778,8 @@ async def trade_reset(interaction: discord.Interaction, sym: str = None):
         )
     else:
         sym = sym.upper()
-        pos = _db_get_position(uid, sym)
-        txs = _db_list_transactions(uid, sym)
+        pos = get_position(uid, sym)
+        txs = list_transactions(uid, sym)
         if pos is None and not txs:
             await interaction.response.send_message(f"`{sym}` 沒有任何交易紀錄可清除。")
             return
@@ -844,20 +796,16 @@ async def trade_reset(interaction: discord.Interaction, sym: str = None):
 # ════════════════════════════════════════════════════════
 
 
-class SectorPageView(discord.ui.View):
-    PAGE_SIZE = 15
+class SectorPageView(PageView):
 
     def __init__(self, sector_name: str, stocks: list[dict]):
-        super().__init__(timeout=120)
         self.sector_name = sector_name
         self.stocks = stocks
-        self.page = 0
-        self.total_pages = max(1, -(-len(stocks) // self.PAGE_SIZE))
-        self._refresh_buttons()
+        super().__init__(len(stocks))
 
     def _build_content(self) -> str:
-        start = self.page * self.PAGE_SIZE
-        chunk = self.stocks[start: start + self.PAGE_SIZE]
+        start = self.page * PAGE_SIZE
+        chunk = self.stocks[start: start + PAGE_SIZE]
         lines = "代號　　名稱　　　　市場\n" + "─" * 28 + "\n"
         lines += "\n".join(
             f"`{s['symbol']}`　{s['name']}　({s['market']})" for s in chunk
@@ -869,22 +817,6 @@ class SectorPageView(discord.ui.View):
             "輸入 `/q 代號` 查詢詳細資訊，例如：`/q 2330`"
         )
 
-    def _refresh_buttons(self):
-        self.prev_btn.disabled = self.page == 0
-        self.next_btn.disabled = self.page >= self.total_pages - 1
-
-    @discord.ui.button(label="◀ 上一頁", style=discord.ButtonStyle.secondary)
-    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page -= 1
-        self._refresh_buttons()
-        await interaction.response.edit_message(content=self._build_content(), view=self)
-
-    @discord.ui.button(label="下一頁 ▶", style=discord.ButtonStyle.secondary)
-    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page += 1
-        self._refresh_buttons()
-        await interaction.response.edit_message(content=self._build_content(), view=self)
-
 
 sector_group = app_commands.Group(name="sector", description="產業類別查詢")
 
@@ -895,7 +827,7 @@ async def sector_list(interaction: discord.Interaction):
     try:
         data = get_sector_data()
     except Exception as e:
-        print(f"[WARN] /sector list 查詢失敗：{e}")
+        logger.warning("/sector list 查詢失敗：%s", e)
         await interaction.followup.send("產業分類資料載入失敗，請稍後再試！")
         return
 
@@ -934,7 +866,7 @@ async def sector_search(interaction: discord.Interaction, category: str):
     try:
         data = get_sector_data()
     except Exception as e:
-        print(f"[WARN] /sector search 查詢失敗：{e}")
+        logger.warning("/sector search 查詢失敗：%s", e)
         await interaction.followup.send("產業分類資料載入失敗，請稍後再試！")
         return
 
