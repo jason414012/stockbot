@@ -1,0 +1,14 @@
+# Discord 機器人框架
+discord.py
+
+# RSS 新聞來源解析
+feedparser
+
+# 資料處理與表格運算
+pandas
+
+# 富果證券 API
+fugle-marketdata
+
+# 從 .env 檔載入環境變數（機密資訊管理）
+python-dotenv

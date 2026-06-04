@@ -1,0 +1,25 @@
+# 機密資訊
+.env
+
+# 資料庫
+*.db
+*.db-shm
+*.db-wal
+
+# Python 編譯快取
+__pycache__/
+*.pyc
+*.pyo
+
+# 虛擬環境
+venv/
+.venv/
+env/
+
+# 日誌
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
