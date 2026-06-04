@@ -22,14 +22,15 @@ The bot validates `DISCORD_TOKEN` and `FUGLE_API_KEY` on startup and exits if ei
 
 ## Architecture
 
-Six focused modules with clear boundaries:
+Eight focused modules with clear boundaries:
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Loads `.env`, defines news sources, breaking-news keywords, timezone, DB path |
+| `config.py` | Loads `.env`, defines news sources, breaking-news keywords, timezone, DB path, business-limit constants |
 | `state.py` | Singleton bot/Fugle client instances, and all in-memory mutable caches |
 | `db.py` | All SQLite reads/writes (watchlist, alerts, transactions, positions) |
 | `data.py` | Fugle API calls, stock/index/sector list caching, fee/tax math, formatting |
+| `display.py` | CJK-aware text formatting utilities: `cjk_width`, `pad_right`, `pad_left`, `format_table` |
 | `news.py` | RSS parsing, breaking-news detection, Discord Embed construction |
 | `commands.py` | All Discord slash command handlers; `bot.tree.add_command(group)` calls at end of file |
 | `tasks.py` | Seven background `asyncio` tasks that fire on schedules |
@@ -39,7 +40,9 @@ Six focused modules with clear boundaries:
 
 **Async/sync boundary:** All Fugle API calls are synchronous. `tasks.py` wraps them with `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
 
-**Cross-module dependency:** `tasks.py` imports `_format_table` from `commands.py` for the weekly report. This is the only cross-command import.
+**Shared utilities:** `display.py` contains CJK-aware formatting functions used by both `commands.py` and `tasks.py`. This avoids circular imports.
+
+**Logging:** All modules use Python's `logging` module (configured in `config.py`). Use `logger = logging.getLogger(__name__)` in each module.
 
 ## Key Business Logic
 
@@ -49,13 +52,17 @@ Six focused modules with clear boundaries:
 - ETF detection: `"ETF" in info["name"].upper()` — name-based, not symbol-based
 - Day-trade detection: any existing buy transaction for same symbol on same `transaction_date`
 - Position cost basis uses LIFO. `_build_lifo_lots()` reconstructs lot history from all prior transactions; `_calc_sell_cost_and_new_avg()` uses it. `positions.avg_cost` is kept updated after every trade but LIFO lots are recomputed from raw `transactions` rows at sell time.
-- `_db_remove_position` cascades: also deletes all `transactions` rows for that symbol (code-level, not a DB FK).
+- `remove_position` cascades: also deletes all `transactions` rows for that symbol (code-level, not a DB FK).
+
+**Business-limit constants (in `config.py`)**
+- `MAX_ALERTS_PER_SYMBOL` (3), `MAX_WATCHLIST_SIZE` (10), `VOLATILITY_THRESHOLD_PCT` (3.0)
+- `PAGE_SIZE` (15), `HISTORY_DISPLAY_LIMIT` (20), `MAX_COMPARE_SYMBOLS` (5)
 
 **Caches in `state.py`**
-- `_stock_list_cache` / `_index_list_cache` / `_sector_cache` — refreshed once per calendar day
-- `_watchlist` — loaded from DB at startup; mutated in memory and written to DB on every add/remove
-- `_pushed_news_ids` — in-memory set loaded from DB at startup (3-day lookback); `pushed_news` table entries older than 3 days are purged on load
-- `_breaking_checked_ids` — reset daily inside `breaking_news_scan` via a `_last_reset` attr on the task function itself
+- `stock_list_cache` / `index_list_cache` / `sector_cache` — refreshed once per calendar day
+- `watchlist` — loaded from DB at startup; mutated in memory and written to DB on every add/remove
+- `pushed_news_ids` — in-memory set loaded from DB at startup (3-day lookback); `pushed_news` table entries older than 3 days are purged on load
+- `breaking_checked_ids` — reset daily via `breaking_last_reset_date` in `state.py`
 
 **Task deduplication pattern:** Time-triggered tasks (`market_open_push`, `market_close_push`, `weekly_report_push`) run on a 1-minute loop and check the clock inside the handler. They guard against double-fire across restarts with a date/week-number stored in `state.*_pushed_date` variables.
 
@@ -63,7 +70,7 @@ Six focused modules with clear boundaries:
 
 **Symbol detection:** `_looks_like_symbol()` in `commands.py` matches pure digits (股票代號) or `IX\d+` pattern (指數代號 like `IX0001`).
 
-**CJK display width:** `_dw()` / `_rpad()` / `_lpad()` in `commands.py` count full-width chars as 2. `_format_table()` uses these for aligned monospace output. Match this pattern when adding tabular output.
+**CJK display width:** `cjk_width()` / `pad_right()` / `pad_left()` in `display.py` count full-width chars as 2. `format_table()` uses these for aligned monospace output. Match this pattern when adding tabular output.
 
 ## Scheduled Tasks (tasks.py)
 
@@ -74,28 +81,32 @@ Six focused modules with clear boundaries:
 | `market_close_push` | 1 min | weekday 13:30 exactly |
 | `breaking_news_scan` | 5 min | trading hours only |
 | `price_alert_scan` | 2 min | trading hours only |
-| `watchlist_volatility_alert` | 5 min | trading hours only; threshold ±3% |
+| `watchlist_volatility_alert` | 5 min | trading hours only; threshold ±`VOLATILITY_THRESHOLD_PCT`% |
 | `weekly_report_push` | 1 min | Friday 14:00 exactly |
 
-Each task has a `before_loop` hook that calls `await state.bot.wait_until_ready()`.
+All tasks share a single `_wait_ready()` before-loop hook that calls `await state.bot.wait_until_ready()`.
 
 ## Database Schema (db.py)
 
-- `watchlist(user_id, symbol, added_at)` — PK (user_id, symbol); max 10 per user enforced in commands
-- `price_alerts(id, user_id, symbol, target, direction)` — direction is `'above'` or `'below'`; auto-deleted on trigger; max 3 per user per symbol
+All db functions use descriptive names: `add_watchlist`, `remove_watchlist`, `list_user_alerts`, `add_transaction`, `get_position`, etc. Connection handling uses a shared `_connect()` helper with `sqlite3.Row` factory.
+
+- `watchlist(user_id, symbol, added_at)` — PK (user_id, symbol); max `MAX_WATCHLIST_SIZE` per user enforced in commands
+- `price_alerts(id, user_id, symbol, target, direction)` — direction is `'above'` or `'below'`; auto-deleted on trigger; max `MAX_ALERTS_PER_SYMBOL` per user per symbol
 - `transactions(id, user_id, symbol, type, price, shares, transaction_date, fee, tax)`
 - `positions(user_id, symbol, avg_cost, shares, realized_pnl)` — PK (user_id, symbol)
 - `pushed_news(news_id, pushed_at)` — 3-day TTL purged on load
 
 ## Slash Commands (commands.py)
 
-- `/q <symbol|name>` — direct quote if symbol-like; name search with paginated `SearchPageView` (15/page, 120s timeout) if ≥15 results
+- `/q <symbol|name>` — direct quote if symbol-like; name search with paginated `SearchPageView` (`PAGE_SIZE`/page, 120s timeout) if ≥15 results
 - `/symbol <s1> [s2..s5]` — side-by-side compare; indices and stocks rendered in separate code blocks
 - `/alert set|list|remove` — price target alerts; direction auto-detected from current price vs target
 - `/watch add|remove|list|clear` — personal watchlist
 - `/trade buy|sell|profit|history|reset` — portfolio tracking; `buy`/`sell`/`profit`/`history` are ephemeral
 - `/sector list|search` — browse 38 industry sectors with paginated `SectorPageView`
 - `/menu` — help text listing all commands and auto-push schedule
+
+**UI patterns:** `PageView` is a shared base class for pagination (used by `SearchPageView` and `SectorPageView`). `_add_quote_field(embed, info)` is the shared helper for adding stock/index quote fields to embeds.
 
 ## Dependencies
 
