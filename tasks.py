@@ -1,22 +1,26 @@
 import asyncio
+import logging
 from datetime import datetime
 
 from discord.ext import tasks
 
+logger = logging.getLogger(__name__)
+
 import state
-from config import TW, NEWS_CHANNEL_ID, ALERT_CHANNEL_ID
-from db import _save_pushed_news, _db_all_alerts, _db_delete_alert_by_id
+from config import TW, NEWS_CHANNEL_ID, ALERT_CHANNEL_ID, VOLATILITY_THRESHOLD_PCT
+from db import save_pushed_news, list_all_alerts, delete_alert
 from data import get_stock_info, get_candles, is_trading_hours
 from news import fetch_latest_news, is_breaking_news, build_news_embed
-from commands import _format_table
+from display import format_table
 
 
 async def _get_stock_info_async(symbol: str) -> dict:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, get_stock_info, symbol)
 
+
 # ════════════════════════════════════════════════════════
-#  定時推播任務
+#  共用 helpers
 # ════════════════════════════════════════════════════════
 
 
@@ -28,8 +32,23 @@ async def _push_news_to_channel(channel, new_items: list[dict], label: str):
     for news in new_items:
         embed = build_news_embed(news)
         await channel.send(embed=embed)
-        state._pushed_news_ids.add(news["id"])
-        _save_pushed_news(news["id"])
+        state.pushed_news_ids.add(news["id"])
+        save_pushed_news(news["id"])
+
+
+async def _scheduled_news_push(hour: int, minute: int, state_attr: str, label: str):
+    now = datetime.now(TW)
+    if now.weekday() >= 5 or not (now.hour == hour and now.minute == minute):
+        return
+    if getattr(state, state_attr) == now.date():
+        return
+    channel = state.bot.get_channel(NEWS_CHANNEL_ID)
+    if channel is None:
+        return
+    news_list = await fetch_latest_news(max_per_source=5)
+    new_items = [n for n in news_list if n["id"] not in state.pushed_news_ids]
+    await _push_news_to_channel(channel, new_items, label)
+    setattr(state, state_attr, now.date())
 
 
 # ── ① 即時推播：每 1 分鐘 ──────────────────────────────────────────────────────
@@ -40,59 +59,22 @@ async def auto_news_push():
     if channel is None:
         return
     news_list = await fetch_latest_news(max_per_source=3)
-    new_items = [n for n in news_list if n["id"] not in state._pushed_news_ids]
+    new_items = [n for n in news_list if n["id"] not in state.pushed_news_ids]
     await _push_news_to_channel(channel, new_items, "（即時推播）")
-
-
-@auto_news_push.before_loop
-async def before_auto_news():
-    await state.bot.wait_until_ready()
 
 
 # ── ② 開盤推播：09:00 ──────────────────────────────────────────────────────────
 
 @tasks.loop(minutes=1)
 async def market_open_push():
-    now = datetime.now(TW)
-    if now.weekday() >= 5 or not (now.hour == 9 and now.minute == 0):
-        return
-    if state._market_open_pushed_date == now.date():
-        return
-    channel = state.bot.get_channel(NEWS_CHANNEL_ID)
-    if channel is None:
-        return
-    news_list = await fetch_latest_news(max_per_source=5)
-    new_items = [n for n in news_list if n["id"] not in state._pushed_news_ids]
-    await _push_news_to_channel(channel, new_items, "🔔 **開盤晨報**")
-    state._market_open_pushed_date = now.date()
-
-
-@market_open_push.before_loop
-async def before_open_push():
-    await state.bot.wait_until_ready()
+    await _scheduled_news_push(9, 0, "market_open_pushed_date", "🔔 **開盤晨報**")
 
 
 # ── ③ 收盤推播：13:30 ──────────────────────────────────────────────────────────
 
 @tasks.loop(minutes=1)
 async def market_close_push():
-    now = datetime.now(TW)
-    if now.weekday() >= 5 or not (now.hour == 13 and now.minute == 30):
-        return
-    if state._market_close_pushed_date == now.date():
-        return
-    channel = state.bot.get_channel(NEWS_CHANNEL_ID)
-    if channel is None:
-        return
-    news_list = await fetch_latest_news(max_per_source=5)
-    new_items = [n for n in news_list if n["id"] not in state._pushed_news_ids]
-    await _push_news_to_channel(channel, new_items, "🔔 **收盤總整理**")
-    state._market_close_pushed_date = now.date()
-
-
-@market_close_push.before_loop
-async def before_close_push():
-    await state.bot.wait_until_ready()
+    await _scheduled_news_push(13, 30, "market_close_pushed_date", "🔔 **收盤總整理**")
 
 
 # ── ④ 重大新聞即時掃描：每 5 分鐘（盤中）──────────────────────────────────────
@@ -105,17 +87,16 @@ async def breaking_news_scan():
     if channel is None:
         return
 
-    # 防止 _breaking_checked_ids 無限增長（每日重置）
     today = datetime.now(TW).date()
-    if not hasattr(breaking_news_scan, "_last_reset") or breaking_news_scan._last_reset != today:
-        state._breaking_checked_ids.clear()
-        breaking_news_scan._last_reset = today
+    if state.breaking_last_reset_date != today:
+        state.breaking_checked_ids.clear()
+        state.breaking_last_reset_date = today
 
     news_list = await fetch_latest_news(max_per_source=5)
     for news in news_list:
-        if news["id"] in state._breaking_checked_ids:
+        if news["id"] in state.breaking_checked_ids:
             continue
-        state._breaking_checked_ids.add(news["id"])
+        state.breaking_checked_ids.add(news["id"])
 
         if not is_breaking_news(news["title"]):
             continue
@@ -124,30 +105,24 @@ async def breaking_news_scan():
         await channel.send(f'🚨 **【重大新聞速報】** ｜ {now_str}')
         embed = build_news_embed(news)
         await channel.send(embed=embed)
-        state._pushed_news_ids.add(news["id"])
-        _save_pushed_news(news["id"])
-
-
-@breaking_news_scan.before_loop
-async def before_breaking_scan():
-    await state.bot.wait_until_ready()
+        state.pushed_news_ids.add(news["id"])
+        save_pushed_news(news["id"])
 
 
 # ── ⑤ 價格警示掃描：每 2 分鐘（盤中）─────────────────────────────────────────
 
 @tasks.loop(minutes=2)
 async def price_alert_scan():
-    """盤中每 2 分鐘掃描所有使用者的價格警示。"""
     if not is_trading_hours():
         return
 
-    alerts = _db_all_alerts()
+    alerts = list_all_alerts()
     if not alerts:
         return
 
     alert_channel = state.bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel is None:
-        print("[WARN] 找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
+        logger.warning("找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
         return
 
     symbols = list({a["symbol"] for a in alerts})
@@ -171,7 +146,7 @@ async def price_alert_scan():
         if not triggered:
             continue
 
-        _db_delete_alert_by_id(alert["id"])
+        delete_alert(alert["id"])
 
         try:
             direction_str = "突破" if alert["direction"] == "above" else "跌破"
@@ -182,29 +157,22 @@ async def price_alert_scan():
                 f'目前價格：**{price} 元**'
             )
         except Exception as e:
-            print(f"[WARN] 頻道價格警示發送失敗（uid={alert['user_id']}）：{e}")
-
-
-@price_alert_scan.before_loop
-async def before_alert_scan():
-    await state.bot.wait_until_ready()
+            logger.warning("頻道價格警示發送失敗（uid=%s）：%s", alert['user_id'], e)
 
 
 # ── ⑥ 自選股漲跌幅警示：每 5 分鐘（盤中）────────────────────────────────────
 
 @tasks.loop(minutes=5)
 async def watchlist_volatility_alert():
-    """盤中每 5 分鐘掃描自選股，漲跌幅超過 ±3% 時通知使用者。"""
     if not is_trading_hours():
         return
 
     alert_channel = state.bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel is None:
-        print("[WARN] 找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
+        logger.warning("找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
         return
 
-    # 去重：先收集所有 symbol，統一查價一次
-    all_symbols = list({sym for symbols in state._watchlist.values() for sym in symbols})
+    all_symbols = list({sym for symbols in state.watchlist.values() for sym in symbols})
     prices_info: dict[str, dict] = {}
     for sym in all_symbols:
         try:
@@ -212,7 +180,7 @@ async def watchlist_volatility_alert():
         except Exception:
             pass
 
-    for uid, symbols in state._watchlist.items():
+    for uid, symbols in state.watchlist.items():
         if not symbols:
             continue
         alerts = []
@@ -222,7 +190,7 @@ async def watchlist_volatility_alert():
                 continue
             try:
                 pct = float(info["change_percent"])
-                if abs(pct) >= 3:
+                if abs(pct) >= VOLATILITY_THRESHOLD_PCT:
                     direction = "🔺" if pct > 0 else "🔻"
                     alerts.append(
                         f'{direction} **{info["name"]}（{sym}）** '
@@ -241,33 +209,27 @@ async def watchlist_volatility_alert():
             )
             await alert_channel.send(msg)
         except Exception as e:
-            print(f"[WARN] 自選股波動頻道通知失敗（uid={uid}）：{e}")
-
-
-@watchlist_volatility_alert.before_loop
-async def before_vol_alert():
-    await state.bot.wait_until_ready()
+            logger.warning("自選股波動頻道通知失敗（uid=%s）：%s", uid, e)
 
 
 # ── ⑦ 週報推播：每週五 14:00 ──────────────────────────────────────────────────
 
 @tasks.loop(minutes=1)
 async def weekly_report_push():
-    """每週五 14:00 推播各使用者自選股本週績效週報。"""
     now = datetime.now(TW)
     if not (now.weekday() == 4 and now.hour == 14 and now.minute == 0):
         return
     week_no = now.isocalendar()[1]
-    if state._weekly_report_pushed_week == week_no:
+    if state.weekly_report_pushed_week == week_no:
         return
-    state._weekly_report_pushed_week = week_no
+    state.weekly_report_pushed_week = week_no
 
     alert_channel = state.bot.get_channel(ALERT_CHANNEL_ID)
     if alert_channel is None:
-        print("[WARN] 找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
+        logger.warning("找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
         return
 
-    for uid, symbols in state._watchlist.items():
+    for uid, symbols in state.watchlist.items():
         if not symbols:
             continue
         rows = []
@@ -298,16 +260,25 @@ async def weekly_report_push():
         if not rows:
             continue
         try:
-            table = _format_table(rows)
+            table = format_table(rows)
             msg = (
                 f"📅 <@{uid}> **本週自選股績效週報** ｜ {now.strftime('%Y/%m/%d')}\n"
                 f"```{table}```"
             )
             await alert_channel.send(msg)
         except Exception as e:
-            print(f"[WARN] 週報頻道通知失敗（uid={uid}）：{e}")
+            logger.warning("週報頻道通知失敗（uid=%s）：%s", uid, e)
 
 
-@weekly_report_push.before_loop
-async def before_weekly_report():
+# ── 統一 before_loop hook ──────────────────────────────────────────────────────
+
+async def _wait_ready():
     await state.bot.wait_until_ready()
+
+auto_news_push.before_loop(_wait_ready)
+market_open_push.before_loop(_wait_ready)
+market_close_push.before_loop(_wait_ready)
+breaking_news_scan.before_loop(_wait_ready)
+price_alert_scan.before_loop(_wait_ready)
+watchlist_volatility_alert.before_loop(_wait_ready)
+weekly_report_push.before_loop(_wait_ready)
