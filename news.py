@@ -1,9 +1,12 @@
 import asyncio
+import logging
 
 import discord
 import feedparser
 
 from config import NEWS_SOURCES, BREAKING_KEYWORDS
+
+logger = logging.getLogger(__name__)
 
 # ════════════════════════════════════════════════════════
 #  新聞抓取
@@ -26,7 +29,7 @@ def _fetch_news_sync(max_per_source: int = 5) -> list[dict]:
                     "published": entry.get("published", ""),
                 })
         except Exception as e:
-            print(f"[WARN] 抓取 {src['name']} RSS 失敗：{e}")
+            logger.warning("抓取 %s RSS 失敗：%s", src['name'], e)
     return all_news
 
 

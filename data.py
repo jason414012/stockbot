@@ -1,3 +1,4 @@
+import logging
 import re
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -7,6 +8,8 @@ import pandas as pd
 import state
 from config import TW
 
+logger = logging.getLogger(__name__)
+
 
 # ════════════════════════════════════════════════════════
 #  股票清單快取
@@ -15,8 +18,8 @@ from config import TW
 
 def get_stock_list() -> pd.DataFrame:
     today = date.today()
-    if state._stock_list_cache is not None and state._stock_list_date == today:
-        return state._stock_list_cache
+    if state.stock_list_cache is not None and state.stock_list_date == today:
+        return state.stock_list_cache
 
     records = []
     for exchange, label in [("TWSE", "上市"), ("TPEx", "上櫃")]:
@@ -27,18 +30,18 @@ def get_stock_list() -> pd.DataFrame:
                 if re.match(r"^\d{4}$", code):
                     records.append({"symbol": code, "name": item.get("name", "")})
         except Exception as e:
-            print(f"[WARN] 無法取得{label}清單：{e}")
+            logger.warning("無法取得%s清單：%s", label, e)
 
     if not records:
-        if state._stock_list_cache is not None:
-            print("[WARN] 股票清單更新失敗，沿用前次快取")
-            return state._stock_list_cache
+        if state.stock_list_cache is not None:
+            logger.warning("股票清單更新失敗，沿用前次快取")
+            return state.stock_list_cache
         return pd.DataFrame(columns=["symbol", "name"])
 
     result = pd.DataFrame(records)
-    state._stock_list_cache = result
-    state._stock_list_date  = today
-    print(f"[INFO] 股票清單已更新，共 {len(result)} 筆")
+    state.stock_list_cache = result
+    state.stock_list_date  = today
+    logger.info("股票清單已更新，共 %d 筆", len(result))
     return result
 
 
@@ -49,8 +52,8 @@ def get_stock_list() -> pd.DataFrame:
 
 def get_index_list() -> pd.DataFrame:
     today = date.today()
-    if state._index_list_cache is not None and state._index_list_date == today:
-        return state._index_list_cache
+    if state.index_list_cache is not None and state.index_list_date == today:
+        return state.index_list_cache
 
     records = []
     for exchange in ["TWSE", "TPEx"]:
@@ -59,18 +62,18 @@ def get_index_list() -> pd.DataFrame:
             for item in resp.get("data", []):
                 records.append({"symbol": item["symbol"], "name": item.get("name", "")})
         except Exception as e:
-            print(f"[WARN] 無法取得指數清單（{exchange}）：{e}")
+            logger.warning("無法取得指數清單（%s）：%s", exchange, e)
 
     if not records:
-        if state._index_list_cache is not None:
-            print("[WARN] 指數清單更新失敗，沿用前次快取")
-            return state._index_list_cache
+        if state.index_list_cache is not None:
+            logger.warning("指數清單更新失敗，沿用前次快取")
+            return state.index_list_cache
         return pd.DataFrame(columns=["symbol", "name"])
 
     result = pd.DataFrame(records).drop_duplicates("symbol").reset_index(drop=True)
-    state._index_list_cache = result
-    state._index_list_date  = today
-    print(f"[INFO] 指數清單已更新，共 {len(result)} 筆")
+    state.index_list_cache = result
+    state.index_list_date  = today
+    logger.info("指數清單已更新，共 %d 筆", len(result))
     return result
 
 
@@ -103,8 +106,8 @@ SECTOR_CODE_MAP = {
 
 def get_sector_data() -> dict[str, list[dict]]:
     today = date.today()
-    if state._sector_cache is not None and state._sector_cache_date == today:
-        return state._sector_cache
+    if state.sector_cache is not None and state.sector_cache_date == today:
+        return state.sector_cache
 
     records = []
     for exchange, market_label in [("TWSE", "上市"), ("TPEx", "上櫃")]:
@@ -121,12 +124,12 @@ def get_sector_data() -> dict[str, list[dict]]:
                         "market": market_label,
                     })
         except Exception as e:
-            print(f"[WARN] 無法取得{market_label}產業分類：{e}")
+            logger.warning("無法取得%s產業分類：%s", market_label, e)
 
     if not records:
-        if state._sector_cache is not None:
-            print("[WARN] 產業分類更新失敗，沿用前次快取")
-            return state._sector_cache
+        if state.sector_cache is not None:
+            logger.warning("產業分類更新失敗，沿用前次快取")
+            return state.sector_cache
         return {}
 
     result: dict[str, list[dict]] = {}
@@ -140,10 +143,10 @@ def get_sector_data() -> dict[str, list[dict]]:
     for sector in result:
         result[sector].sort(key=lambda x: x["symbol"])
 
-    state._sector_cache = result
-    state._sector_cache_date = today
+    state.sector_cache = result
+    state.sector_cache_date = today
     total = sum(len(v) for v in result.values())
-    print(f"[INFO] 產業分類已更新，共 {len(result)} 個產業、{total} 筆")
+    logger.info("產業分類已更新，共 %d 個產業、%d 筆", len(result), total)
     return result
 
 
