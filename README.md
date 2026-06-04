@@ -1,4 +1,4 @@
-# StockBot — 台股 Discord 機器人
+# StockBot — 台股 Discord 機器人 (懶人看盤)
 
 監控台灣股市（TWSE／TPEx）、推播財經新聞、管理個人投資組合的 Discord Bot。
 
