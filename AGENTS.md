@@ -22,23 +22,28 @@ The bot validates `DISCORD_TOKEN` and `FUGLE_API_KEY` on startup and exits if ei
 
 ## Architecture
 
-Nine focused modules with clear boundaries:
+Focused modules with lightweight layering:
 
 | Module | Responsibility |
 |---|---|
 | `config.py` | Loads `.env`, defines news sources, breaking-news keywords, timezone, DB path, business-limit constants |
 | `state.py` | Singleton bot/Fugle client instances, and all in-memory mutable caches |
 | `db.py` | All SQLite reads/writes (watchlist, alerts, transactions, positions) |
-| `data.py` | Fugle API calls, stock/index/sector list caching, fee/tax math, formatting |
+| `data.py` | Fugle API calls, stock/index/sector list caching, quote/value formatting |
 | `display.py` | CJK-aware text formatting utilities: `cjk_width`, `pad_right`, `pad_left`, `format_table` |
 | `news.py` | RSS parsing, breaking-news detection, Discord Embed construction |
-| `commands.py` | All Discord slash command handlers; `bot.tree.add_command(group)` calls at end of file |
+| `domain/alerts.py` | Pure alert rules: target direction, trigger checks, volatility threshold checks |
+| `domain/trading.py` | Pure trading business rules: date parsing, fees, taxes, LIFO lots, position math |
+| `services/portfolio_service.py` | Coordinates trading rules with DB writes and quote lookups for buy/sell flows |
+| `commands.py` | Discord slash command handlers and response formatting; `bot.tree.add_command(group)` calls at end of file |
 | `tasks.py` | Seven background `asyncio` tasks that fire on schedules |
 | `main.py` | Wires everything: initializes DB, preloads state, registers tasks, starts bot |
 
 **Command registration:** `main.py` does `import commands  # noqa: F401` — the import itself executes all decorators and `bot.tree.add_command()` calls at module level. Nothing further is needed.
 
 **Async/sync boundary:** All Fugle API calls are synchronous. High-frequency task quote lookups use `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. The weekly report task still calls `get_candles()` / `get_stock_info()` synchronously while building reports. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
+
+**Layering:** keep pure business rules in `domain/` free of Discord, Fugle, SQLite, and `.env` dependencies. Application services in `services/` may coordinate `db.py` and `data.py`. Discord commands and scheduled tasks should stay as orchestration/formatting layers.
 
 **Shared utilities:** `display.py` contains CJK-aware formatting functions used by both `commands.py` and `tasks.py`. This avoids circular imports.
 
@@ -47,16 +52,22 @@ Nine focused modules with clear boundaries:
 ## Key Business Logic
 
 **Trading math**
+- Implemented in `domain/trading.py`; keep new trading calculations there so they can be unit-tested without Discord/Fugle/SQLite.
 - Buy fee: 0.1425% of trade value, minimum 20 TWD, rounded
 - Sell tax: 0.3% stock / 0.1% ETF; halved for same-date day trades; floor at 1 TWD (truncated, not rounded)
 - ETF detection: `"ETF" in info["name"].upper()` — name-based, not symbol-based
 - Day-trade detection: any existing buy transaction for same symbol on same `transaction_date`
-- Position cost basis uses LIFO. `_build_lifo_lots()` reconstructs lot history from all prior transactions; `_calc_sell_cost_and_new_avg()` uses it. `positions.avg_cost` is kept updated after every trade but LIFO lots are recomputed from raw `transactions` rows at sell time.
+- Position cost basis uses LIFO. `build_lifo_lots()` reconstructs lot history from all prior transactions; `calc_sell_cost_and_new_avg()` uses it. `positions.avg_cost` is kept updated after every trade but LIFO lots are recomputed from raw `transactions` rows at sell time.
 - `remove_position` cascades: also deletes all `transactions` rows for that symbol (code-level, not a DB FK).
 
 **Business-limit constants (in `config.py`)**
 - `MAX_ALERTS_PER_SYMBOL` (3), `MAX_WATCHLIST_SIZE` (10), `VOLATILITY_THRESHOLD_PCT` (3.0)
 - `PAGE_SIZE` (15), `HISTORY_DISPLAY_LIMIT` (20), `MAX_COMPARE_SYMBOLS` (5)
+
+**Alert rules**
+- Implemented in `domain/alerts.py`; keep direction and trigger/volatility checks there.
+- Price alert direction is `'above'` if target is above current price, otherwise `'below'`.
+- Price alerts trigger when current price crosses the stored target in the stored direction.
 
 **Caches in `state.py`**
 - `stock_list_cache` / `index_list_cache` / `sector_cache` — refreshed once per calendar day
