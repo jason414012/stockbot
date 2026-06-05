@@ -23,6 +23,7 @@ from config import (
     MAX_ALERTS_PER_SYMBOL, MAX_WATCHLIST_SIZE, PAGE_SIZE,
     HISTORY_DISPLAY_LIMIT, MAX_COMPARE_SYMBOLS,
 )
+from domain.alerts import get_alert_direction
 from domain.trading import calculate_fee, calculate_tax, parse_trade_date
 from services.portfolio_service import (
     NoPositionError,
@@ -239,7 +240,7 @@ async def alert_set(interaction: discord.Interaction, sym: str, target: float):
         await interaction.followup.send("查無此股票／指數，請確認代號！")
         return
 
-    direction = "above" if target > cur else "below"
+    direction = get_alert_direction(target, cur)
     dir_str   = f"突破 `{target}`" if direction == "above" else f"跌破 `{target}`"
 
     existing = [a for a in list_user_alerts(interaction.user.id) if a["symbol"] == sym]

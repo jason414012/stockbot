@@ -10,6 +10,7 @@ import state
 from config import TW, NEWS_CHANNEL_ID, ALERT_CHANNEL_ID, VOLATILITY_THRESHOLD_PCT
 from db import save_pushed_news, list_all_alerts, delete_alert
 from data import get_stock_info, get_candles, is_trading_hours
+from domain.alerts import is_price_alert_triggered, is_volatile
 from news import fetch_latest_news, is_breaking_news, build_news_embed
 from display import format_table
 
@@ -139,10 +140,11 @@ async def price_alert_scan():
         price = prices.get(sym)
         if price is None:
             continue
-        triggered = (
-            (alert["direction"] == "above" and price >= alert["target"]) or
-            (alert["direction"] == "below" and price <= alert["target"])
-        )
+        try:
+            triggered = is_price_alert_triggered(alert["direction"], price, alert["target"])
+        except ValueError:
+            logger.warning("未知價格警示方向（id=%s）：%s", alert["id"], alert["direction"])
+            continue
         if not triggered:
             continue
 
@@ -190,7 +192,7 @@ async def watchlist_volatility_alert():
                 continue
             try:
                 pct = float(info["change_percent"])
-                if abs(pct) >= VOLATILITY_THRESHOLD_PCT:
+                if is_volatile(pct, VOLATILITY_THRESHOLD_PCT):
                     direction = "🔺" if pct > 0 else "🔻"
                     alerts.append(
                         f'{direction} **{info["name"]}（{sym}）** '
