@@ -12,6 +12,12 @@ StockBot is a Discord bot for Taiwan stock market monitoring and portfolio manag
 python main.py
 ```
 
+After installing the package in editable mode, this also works:
+
+```bash
+python -m stockbot.main
+```
+
 Requires a `.env` with all four variables set:
 - `DISCORD_TOKEN`
 - `FUGLE_API_KEY`
@@ -26,34 +32,39 @@ Focused modules with lightweight layering:
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | Loads `.env`, defines news sources, breaking-news keywords, timezone, DB path, business-limit constants |
-| `state.py` | Singleton bot/Fugle client instances, and all in-memory mutable caches |
-| `db.py` | All SQLite reads/writes (watchlist, alerts, transactions, positions) |
-| `data.py` | Fugle API calls, stock/index/sector list caching, quote/value formatting |
-| `display.py` | CJK-aware text formatting utilities: `cjk_width`, `pad_right`, `pad_left`, `format_table` |
-| `news.py` | RSS parsing, breaking-news detection, Discord Embed construction |
-| `domain/alerts.py` | Pure alert rules: target direction, trigger checks, volatility threshold checks |
-| `domain/trading.py` | Pure trading business rules: date parsing, fees, taxes, LIFO lots, position math |
-| `services/portfolio_service.py` | Coordinates trading rules with DB writes and quote lookups for buy/sell flows |
-| `commands.py` | Slash command registration entrypoint; imports command modules and calls `bot.tree.add_command(group)` |
-| `bot_commands/` | Discord slash command handlers split by feature (`quote`, `alerts`, `watchlist`, `trade`, `sector`, `menu`) plus shared UI helpers |
-| `tasks.py` | Seven background `asyncio` tasks that fire on schedules |
-| `main.py` | Wires everything: initializes DB, preloads state, registers tasks, starts bot |
+| `src/stockbot/config.py` | Loads `.env`, defines news sources, breaking-news keywords, timezone, DB path, business-limit constants |
+| `src/stockbot/state.py` | Singleton bot/Fugle client instances, and all in-memory mutable caches |
+| `src/stockbot/db.py` | All SQLite reads/writes (watchlist, alerts, transactions, positions) |
+| `src/stockbot/data.py` | Backward-compatible facade for market helpers |
+| `src/stockbot/market_data.py` | Fugle API calls, stock/index/sector list caching, and historical candles |
+| `src/stockbot/market_search.py` | Name search and CJK keyword tokenization |
+| `src/stockbot/market_formatting.py` | Quote/value formatting |
+| `src/stockbot/market_clock.py` | Taiwan market-hours checks |
+| `src/stockbot/display.py` | CJK-aware text formatting utilities: `cjk_width`, `pad_right`, `pad_left`, `format_table` |
+| `src/stockbot/news.py` | RSS parsing, breaking-news detection, Discord Embed construction |
+| `src/stockbot/domain/alerts.py` | Pure alert rules: target direction, trigger checks, volatility threshold checks |
+| `src/stockbot/domain/trading.py` | Pure trading business rules: date parsing, fees, taxes, LIFO lots, position math |
+| `src/stockbot/services/portfolio_service.py` | Coordinates trading rules with DB writes and quote lookups for buy/sell flows |
+| `src/stockbot/commands.py` | Slash command registration entrypoint; imports command modules and calls `bot.tree.add_command(group)` |
+| `src/stockbot/bot_commands/` | Discord slash command handlers split by feature (`quote`, `alerts`, `watchlist`, `trade`, `sector`, `menu`) plus shared UI helpers |
+| `src/stockbot/tasks/` | Seven background `asyncio` tasks split by news, alerts, and reports |
+| `src/stockbot/main.py` | Wires everything: initializes DB, preloads state, registers tasks, starts bot |
+| `main.py` | Repository-root compatibility launcher |
 
-**Command registration:** `main.py` does `import commands  # noqa: F401` — that import loads `bot_commands/*` modules, executes direct command decorators, and registers grouped commands in `commands.py`. Nothing further is needed.
+**Command registration:** `src/stockbot/main.py` imports `stockbot.commands` — that import loads `bot_commands/*` modules, executes direct command decorators, and registers grouped commands in `commands.py`. Nothing further is needed.
 
 **Async/sync boundary:** All Fugle API calls are synchronous. High-frequency task quote lookups use `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. The weekly report task still calls `get_candles()` / `get_stock_info()` synchronously while building reports. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
 
-**Layering:** keep pure business rules in `domain/` free of Discord, Fugle, SQLite, and `.env` dependencies. Application services in `services/` may coordinate `db.py` and `data.py`. Discord commands and scheduled tasks should stay as orchestration/formatting layers.
+**Layering:** keep pure business rules in `src/stockbot/domain/` free of Discord, Fugle, SQLite, and `.env` dependencies. Application services in `src/stockbot/services/` may coordinate `db.py` and `data.py`. Discord commands and scheduled tasks should stay as orchestration/formatting layers.
 
-**Shared utilities:** `display.py` contains CJK-aware formatting functions used by command modules and `tasks.py`. Command-specific pagination and quote embed helpers live in `bot_commands/common.py`.
+**Shared utilities:** `display.py` contains CJK-aware formatting functions used by command modules and report tasks. Command-specific pagination and quote embed helpers live in `bot_commands/common.py`.
 
 **Logging:** All modules use Python's `logging` module (configured in `config.py`). Use `logger = logging.getLogger(__name__)` in each module.
 
 ## Key Business Logic
 
 **Trading math**
-- Implemented in `domain/trading.py`; keep new trading calculations there so they can be unit-tested without Discord/Fugle/SQLite.
+- Implemented in `src/stockbot/domain/trading.py`; keep new trading calculations there so they can be unit-tested without Discord/Fugle/SQLite.
 - Buy fee: 0.1425% of trade value, minimum 20 TWD, rounded
 - Sell tax: 0.3% stock / 0.1% ETF; halved for same-date day trades; floor at 1 TWD (truncated, not rounded)
 - ETF detection: `"ETF" in info["name"].upper()` — name-based, not symbol-based
@@ -66,7 +77,7 @@ Focused modules with lightweight layering:
 - `PAGE_SIZE` (15), `HISTORY_DISPLAY_LIMIT` (20), `MAX_COMPARE_SYMBOLS` (5)
 
 **Alert rules**
-- Implemented in `domain/alerts.py`; keep direction and trigger/volatility checks there.
+- Implemented in `src/stockbot/domain/alerts.py`; keep direction and trigger/volatility checks there.
 - Price alert direction is `'above'` if target is above current price, otherwise `'below'`.
 - Price alerts trigger when current price crosses the stored target in the stored direction.
 
@@ -78,13 +89,13 @@ Focused modules with lightweight layering:
 
 **Task deduplication pattern:** Time-triggered tasks (`market_open_push`, `market_close_push`, `weekly_report_push`) run on a 1-minute loop and check the clock inside the handler. They guard against double-fire within the current process using date/week-number values stored in `state.py`; these guards are in-memory and reset when the bot restarts.
 
-**Taiwan market hours:** `data.is_trading_hours()` — weekdays 09:00–13:30 Asia/Taipei.
+**Taiwan market hours:** `data.is_trading_hours()` / `market_clock.is_trading_hours()` — weekdays 09:00–13:30 Asia/Taipei.
 
 **Symbol detection:** `looks_like_symbol()` in `bot_commands/common.py` matches pure digits (股票代號) or `IX\d+` pattern (指數代號 like `IX0001`).
 
 **CJK display width:** `cjk_width()` / `pad_right()` / `pad_left()` in `display.py` count full-width chars as 2. `format_table()` uses these for aligned monospace output. Match this pattern when adding tabular output.
 
-## Scheduled Tasks (tasks.py)
+## Scheduled Tasks (`src/stockbot/tasks/`)
 
 | Task | Loop interval | Fires when |
 |---|---|---|

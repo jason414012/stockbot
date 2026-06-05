@@ -68,19 +68,45 @@ ALERT_CHANNEL_ID=警示推播頻道的_Channel_ID
 python main.py
 ```
 
+若已用 `pip install -e .` 以 editable mode 安裝本專案，也可以使用正式套件入口：
+
+```bash
+python -m stockbot.main
+```
+
 Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
+
+---
+
+## 專案架構
+
+程式碼採用 `src/stockbot/` package layout，根目錄 `main.py` 僅作為相容啟動器。
+
+| 路徑 | 說明 |
+|---|---|
+| `src/stockbot/domain/` | 純商業規則，如交易成本、LIFO、價格警示判斷 |
+| `src/stockbot/services/` | 協調 DB、Fugle quote lookup 與 domain rules 的應用服務 |
+| `src/stockbot/bot_commands/` | Discord slash command handlers 與互動 UI helpers |
+| `src/stockbot/tasks/` | 背景排程任務，依新聞、警示、週報拆分 |
+| `src/stockbot/market_data.py` | Fugle 市場資料查詢與股票/指數/產業 cache |
+| `src/stockbot/market_search.py` | 股票名稱搜尋與關鍵字 tokenization |
+| `src/stockbot/market_formatting.py` | 報價與成交額格式化 |
+| `src/stockbot/market_clock.py` | 台股盤中時間判斷 |
+| `src/stockbot/data.py` | 向後相容 facade，保留既有 market helper 匯入介面 |
+| `tests/` | 單元測試與低風險重構保護測試 |
 
 ---
 
 ## 開發與測試
 
-核心交易與警示規則位於 `domain/`，可不依賴 Discord 或 Fugle API 直接測試；資料庫交易一致性則使用臨時 SQLite 檔案測試。
+核心交易與警示規則位於 `src/stockbot/domain/`，可不依賴 Discord 或 Fugle API 直接測試；資料庫交易一致性則使用臨時 SQLite 檔案測試。
 
 ```bash
 python -m unittest discover -s tests
+python -m py_compile main.py
 ```
 
-目前測試涵蓋交易日期解析、手續費、證交稅、LIFO 成本計算、買賣持倉計算、價格警示、波動門檻判斷，以及交易紀錄與持倉寫入的 SQLite transaction rollback。
+目前測試涵蓋交易日期解析、手續費、證交稅、LIFO 成本計算、買賣持倉計算、價格警示、波動門檻判斷、market helper、排程任務註冊，以及交易紀錄與持倉寫入的 SQLite transaction rollback。
 
 ---
 
