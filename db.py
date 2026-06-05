@@ -1,15 +1,21 @@
 import logging
 import sqlite3
+from contextlib import contextmanager
 
 from config import DB_FILE
 
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
 def _connect():
     con = sqlite3.connect(DB_FILE)
     con.row_factory = sqlite3.Row
-    return con
+    try:
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 # ════════════════════════════════════════════════════════
@@ -36,16 +42,16 @@ def init_db():
                 user_id    INTEGER NOT NULL,
                 symbol     TEXT    NOT NULL,
                 target     REAL    NOT NULL,
-                direction  TEXT    NOT NULL,   -- 'above' 或 'below'
+                direction  TEXT    NOT NULL CHECK (direction IN ('above', 'below')),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             CREATE TABLE IF NOT EXISTS transactions (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id          INTEGER NOT NULL,
                 symbol           TEXT    NOT NULL,
-                type             TEXT    NOT NULL,
-                price            REAL    NOT NULL,
-                shares           INTEGER NOT NULL,
+                type             TEXT    NOT NULL CHECK (type IN ('buy', 'sell')),
+                price            REAL    NOT NULL CHECK (price > 0),
+                shares           INTEGER NOT NULL CHECK (shares > 0),
                 transaction_date DATE    NOT NULL,
                 fee              INTEGER NOT NULL,
                 tax              INTEGER NOT NULL DEFAULT 0,
@@ -59,6 +65,9 @@ def init_db():
                 realized_pnl  REAL    NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, symbol)
             );
+            CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts(symbol);
+            CREATE INDEX IF NOT EXISTS idx_transactions_user_symbol_date
+                ON transactions(user_id, symbol, transaction_date);
         """)
     logger.info("SQLite 資料庫已就緒：%s", DB_FILE)
 
@@ -225,6 +234,32 @@ def upsert_position(user_id: int, symbol: str, avg_cost: float, shares: int, rea
             "INSERT OR REPLACE INTO positions (user_id, symbol, avg_cost, shares, realized_pnl) "
             "VALUES (?, ?, ?, ?, ?)",
             (user_id, symbol, avg_cost, shares, realized_pnl)
+        )
+
+
+def add_transaction_and_upsert_position(
+    user_id: int,
+    symbol: str,
+    tx_type: str,
+    price: float,
+    shares: int,
+    transaction_date: str,
+    fee: int,
+    tax: int,
+    avg_cost: float,
+    position_shares: int,
+    realized_pnl: float,
+):
+    with _connect() as con:
+        con.execute(
+            "INSERT INTO transactions (user_id, symbol, type, price, shares, transaction_date, fee, tax) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, symbol, tx_type, price, shares, transaction_date, fee, tax)
+        )
+        con.execute(
+            "INSERT OR REPLACE INTO positions (user_id, symbol, avg_cost, shares, realized_pnl) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user_id, symbol, avg_cost, position_shares, realized_pnl)
         )
 
 

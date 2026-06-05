@@ -2,13 +2,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 from data import get_stock_info
-from db import add_transaction, get_position, list_transactions, upsert_position
+from db import add_transaction_and_upsert_position, get_position, list_transactions
 from domain.trading import (
     BuyPositionResult,
     SellPositionResult,
     calculate_buy_position,
     calculate_sell_position,
 )
+from market_types import QuoteInfo
 
 
 class PortfolioError(Exception):
@@ -44,7 +45,7 @@ class SellTradeResult:
     position: SellPositionResult
 
 
-QuoteLookup = Callable[[str], dict]
+QuoteLookup = Callable[[str], QuoteInfo]
 
 
 def record_buy(
@@ -63,8 +64,19 @@ def record_buy(
 
     position = get_position(user_id, sym)
     result = calculate_buy_position(position, price, shares)
-    add_transaction(user_id, sym, "buy", price, shares, tx_date, result.fee, 0)
-    upsert_position(user_id, sym, result.avg_cost, result.shares, result.realized_pnl)
+    add_transaction_and_upsert_position(
+        user_id,
+        sym,
+        "buy",
+        price,
+        shares,
+        tx_date,
+        result.fee,
+        0,
+        result.avg_cost,
+        result.shares,
+        result.realized_pnl,
+    )
     return BuyTradeResult(symbol=sym, date=tx_date, position=result)
 
 
@@ -91,6 +103,17 @@ def record_sell(
 
     transactions = list_transactions(user_id, sym)
     result = calculate_sell_position(position, transactions, price, shares, tx_date, is_etf)
-    add_transaction(user_id, sym, "sell", price, shares, tx_date, result.fee, result.tax)
-    upsert_position(user_id, sym, result.avg_cost, result.shares, result.realized_pnl)
+    add_transaction_and_upsert_position(
+        user_id,
+        sym,
+        "sell",
+        price,
+        shares,
+        tx_date,
+        result.fee,
+        result.tax,
+        result.avg_cost,
+        result.shares,
+        result.realized_pnl,
+    )
     return SellTradeResult(symbol=sym, date=tx_date, position=result)

@@ -8,6 +8,7 @@ import pandas as pd
 import state
 from config import TW
 from domain.trading import calculate_fee, calculate_tax
+from market_types import QuoteInfo, SectorStock
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ SECTOR_CODE_MAP = {
 }
 
 
-def get_sector_data() -> dict[str, list[dict]]:
+def get_sector_data() -> dict[str, list[SectorStock]]:
     today = date.today()
     if state.sector_cache is not None and state.sector_cache_date == today:
         return state.sector_cache
@@ -133,7 +134,7 @@ def get_sector_data() -> dict[str, list[dict]]:
             return state.sector_cache
         return {}
 
-    result: dict[str, list[dict]] = {}
+    result: dict[str, list[SectorStock]] = {}
     for r in records:
         result.setdefault(r["sector"], []).append({
             "symbol": r["symbol"],
@@ -156,7 +157,7 @@ def get_sector_data() -> dict[str, list[dict]]:
 # ════════════════════════════════════════════════════════
 
 
-def _get_index_quote(symbol: str) -> dict:
+def _get_index_quote(symbol: str) -> QuoteInfo:
     sym  = symbol.upper()
     idx  = get_index_list()
     row  = idx[idx["symbol"].str.upper() == sym]
@@ -175,7 +176,7 @@ def _get_index_quote(symbol: str) -> dict:
     }
 
 
-def get_stock_info(symbol: str) -> dict:
+def get_stock_info(symbol: str) -> QuoteInfo:
     """查詢個股或指數即時報價。"""
     sym = symbol.upper()
 
@@ -228,7 +229,7 @@ def format_value(val: float) -> str:
     return f'{val / 10_000:.2f}萬'
 
 
-def format_stock_message(info: dict) -> str:
+def format_stock_message(info: QuoteInfo) -> str:
     sym = info["symbol"]
 
     if info.get("is_index"):

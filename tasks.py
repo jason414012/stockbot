@@ -11,11 +11,12 @@ from config import TW, NEWS_CHANNEL_ID, ALERT_CHANNEL_ID, VOLATILITY_THRESHOLD_P
 from db import save_pushed_news, list_all_alerts, delete_alert
 from data import get_stock_info, get_candles, is_trading_hours
 from domain.alerts import is_price_alert_triggered, is_volatile
+from market_types import NewsItem, QuoteInfo
 from news import fetch_latest_news, is_breaking_news, build_news_embed
 from display import format_table
 
 
-async def _get_stock_info_async(symbol: str) -> dict:
+async def _get_stock_info_async(symbol: str) -> QuoteInfo:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, get_stock_info, symbol)
 
@@ -25,7 +26,7 @@ async def _get_stock_info_async(symbol: str) -> dict:
 # ════════════════════════════════════════════════════════
 
 
-async def _push_news_to_channel(channel, new_items: list[dict], label: str):
+async def _push_news_to_channel(channel, new_items: list[NewsItem], label: str):
     if not new_items:
         return
     now_str = datetime.now(TW).strftime("%Y/%m/%d %H:%M")
@@ -175,7 +176,7 @@ async def watchlist_volatility_alert():
         return
 
     all_symbols = list({sym for symbols in state.watchlist.values() for sym in symbols})
-    prices_info: dict[str, dict] = {}
+    prices_info: dict[str, QuoteInfo] = {}
     for sym in all_symbols:
         try:
             prices_info[sym] = await _get_stock_info_async(sym)

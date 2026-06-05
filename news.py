@@ -5,6 +5,7 @@ import discord
 import feedparser
 
 from config import NEWS_SOURCES, BREAKING_KEYWORDS
+from market_types import NewsItem
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 # ════════════════════════════════════════════════════════
 
 
-def _fetch_news_sync(max_per_source: int = 5) -> list[dict]:
+def _fetch_news_sync(max_per_source: int = 5) -> list[NewsItem]:
     all_news = []
     for src in NEWS_SOURCES:
         try:
@@ -33,7 +34,7 @@ def _fetch_news_sync(max_per_source: int = 5) -> list[dict]:
     return all_news
 
 
-async def fetch_latest_news(max_per_source: int = 5) -> list[dict]:
+async def fetch_latest_news(max_per_source: int = 5) -> list[NewsItem]:
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _fetch_news_sync, max_per_source)
 
@@ -47,7 +48,7 @@ def is_breaking_news(title: str) -> bool:
     return any(kw in title for kw in BREAKING_KEYWORDS)
 
 
-def build_news_embed(news: dict) -> discord.Embed:
+def build_news_embed(news: NewsItem) -> discord.Embed:
     category_tag = f'【{news["category"]}】' if news.get("category") else ""
 
     embed = discord.Embed(

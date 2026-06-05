@@ -6,6 +6,7 @@ from discord.ext import commands
 from fugle_marketdata import RestClient
 
 from config import DISCORD_TOKEN, FUGLE_API_KEY
+from market_types import SectorStock
 
 # ════════════════════════════════════════════════════════
 #  Bot 與 API Client
@@ -29,7 +30,7 @@ stock_list_date:  date | None         = None
 index_list_cache: pd.DataFrame | None = None
 index_list_date:  date | None         = None
 
-sector_cache: dict[str, list[dict]] | None = None
+sector_cache: dict[str, list[SectorStock]] | None = None
 sector_cache_date: date | None              = None
 
 market_open_pushed_date:  date | None = None
