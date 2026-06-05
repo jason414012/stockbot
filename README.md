@@ -72,6 +72,18 @@ Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
 
 ---
 
+## 開發與測試
+
+核心交易與警示規則位於 `domain/`，可不依賴 Discord、Fugle API 或 SQLite 直接執行單元測試。
+
+```bash
+python -m unittest discover -s tests
+```
+
+目前測試涵蓋交易日期解析、手續費、證交稅、LIFO 成本計算、買賣持倉計算、價格警示與波動門檻判斷。
+
+---
+
 ## Slash Commands
 
 ### 查詢
