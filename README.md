@@ -64,17 +64,19 @@ ALERT_CHANNEL_ID=警示推播頻道的_Channel_ID
 
 ## 啟動
 
+一般情況下，只要在專案根目錄執行：
+
 ```bash
 python main.py
 ```
 
-若已用 `pip install -e .` 以 editable mode 安裝本專案，也可以使用正式套件入口：
+Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
+
+若你是開發者，且已用 `pip install -e .` 安裝本專案，也可以改用 package 入口：
 
 ```bash
 python -m stockbot.main
 ```
-
-Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
 
 ---
 
