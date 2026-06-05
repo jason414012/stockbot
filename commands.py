@@ -1,5 +1,4 @@
 import logging
-from datetime import date
 
 import discord
 from discord import app_commands
@@ -11,19 +10,26 @@ from state import bot
 from db import (
     add_watchlist, remove_watchlist, clear_watchlist,
     add_alert, remove_alert, list_user_alerts,
-    add_transaction, list_transactions, list_all_transactions,
-    get_position, upsert_position,
+    list_transactions, list_all_transactions,
+    get_position,
     remove_position, remove_all_positions, list_positions,
 )
 from data import (
     get_stock_info, search_by_name, format_value,
-    get_sector_data, calculate_fee, calculate_tax,
+    get_sector_data,
 )
-from news import fetch_latest_news, build_news_embed
 from display import format_table
 from config import (
     MAX_ALERTS_PER_SYMBOL, MAX_WATCHLIST_SIZE, PAGE_SIZE,
     HISTORY_DISPLAY_LIMIT, MAX_COMPARE_SYMBOLS,
+)
+from domain.trading import calculate_fee, calculate_tax, parse_trade_date
+from services.portfolio_service import (
+    NoPositionError,
+    OversellError,
+    UnknownSymbolError,
+    record_buy,
+    record_sell,
 )
 
 import re as _re
@@ -352,70 +358,6 @@ async def watch_clear(interaction: discord.Interaction):
 # ════════════════════════════════════════════════════════
 
 
-def _parse_date(date_str: str | None) -> str | None:
-    """解析日期字串，回傳 YYYY-MM-DD；省略時回傳今日。"""
-    if date_str is None:
-        return date.today().isoformat()
-    try:
-        return date.fromisoformat(date_str).isoformat()
-    except ValueError:
-        return None
-
-
-def _build_lifo_lots(txs: list[dict]) -> list[list]:
-    """依歷史交易（不含本次）建立 LIFO 剩餘批次清單，回傳 [[shares, cost_per_share], ...]（舊→新）。"""
-    sorted_txs = sorted(txs, key=lambda t: (t["date"], t.get("created_at", "")))
-    lots: list[list] = []
-    for tx in sorted_txs:
-        if tx["type"] == "buy":
-            cost_per_share = (tx["price"] * tx["shares"] + tx["fee"]) / tx["shares"]
-            lots.append([tx["shares"], cost_per_share])
-        elif tx["type"] == "sell":
-            remaining = tx["shares"]
-            while remaining > 0 and lots:
-                if lots[-1][0] <= remaining:
-                    remaining -= lots[-1][0]
-                    lots.pop()
-                else:
-                    lots[-1][0] -= remaining
-                    remaining = 0
-    return lots
-
-
-def _calc_sell_cost_and_new_avg(txs: list[dict], sell_shares: int) -> tuple[float, float]:
-    """以 LIFO 計算賣出成本，並回傳賣出後剩餘持倉的新均攤成本。"""
-    lots = _build_lifo_lots(txs)
-
-    sell_cost = 0.0
-    remaining = sell_shares
-    for lot in reversed(lots):
-        if remaining <= 0:
-            break
-        take = min(remaining, lot[0])
-        sell_cost += take * lot[1]
-        remaining -= take
-
-    remaining = sell_shares
-    for i in range(len(lots) - 1, -1, -1):
-        if remaining <= 0:
-            break
-        if lots[i][0] <= remaining:
-            remaining -= lots[i][0]
-            lots[i][0] = 0
-        else:
-            lots[i][0] -= remaining
-            remaining = 0
-
-    remaining_lots = [lot for lot in lots if lot[0] > 0]
-    if remaining_lots:
-        total_shares = sum(lot[0] for lot in remaining_lots)
-        new_avg = sum(lot[0] * lot[1] for lot in remaining_lots) / total_shares
-    else:
-        new_avg = 0.0
-
-    return sell_cost, new_avg
-
-
 trade_group = app_commands.Group(name="trade", description="交易記錄與損益追蹤")
 
 
@@ -437,40 +379,26 @@ async def trade_buy(interaction: discord.Interaction, sym: str, price: float, sh
         await interaction.response.send_message("買入股數必須大於 0。", ephemeral=True)
         return
 
-    tx_date = _parse_date(date_str)
+    tx_date = parse_trade_date(date_str)
     if tx_date is None:
         await interaction.response.send_message("日期格式錯誤，請使用 `YYYY-MM-DD`，例如 `2025-05-25`。", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
     try:
-        get_stock_info(sym)
-    except Exception:
+        result = record_buy(uid, sym, price, shares, tx_date)
+    except UnknownSymbolError:
         await interaction.followup.send(f"查無代號 `{sym}`，請確認後再試。", ephemeral=True)
         return
 
-    fee = calculate_fee(price, shares)
-    pos = get_position(uid, sym)
-
-    if pos is None or pos["shares"] == 0:
-        new_avg = (price * shares + fee) / shares
-        new_shares = shares
-        realized = pos["realized_pnl"] if pos else 0.0
-    else:
-        old_cost_total = pos["avg_cost"] * pos["shares"]
-        new_shares = pos["shares"] + shares
-        new_avg = (old_cost_total + price * shares + fee) / new_shares
-        realized = pos["realized_pnl"]
-
-    add_transaction(uid, sym, "buy", price, shares, tx_date, fee, 0)
-    upsert_position(uid, sym, new_avg, new_shares, realized)
+    position = result.position
 
     await interaction.followup.send(
         f"✅ **買入成功**　`{sym}`\n"
         f"買入股數　`{shares:,} 股` @ `{price:,.2f} 元`\n"
-        f"手續費　　`{fee:,} 元`\n"
-        f"均攤成本　`{new_avg:,.4f} 元/股`\n"
-        f"目前持股　`{new_shares:,} 股`　（交易日期：{tx_date}）",
+        f"手續費　　`{position.fee:,} 元`\n"
+        f"均攤成本　`{position.avg_cost:,.4f} 元/股`\n"
+        f"目前持股　`{position.shares:,} 股`　（交易日期：{result.date}）",
         ephemeral=True,
     )
 
@@ -493,65 +421,36 @@ async def trade_sell(interaction: discord.Interaction, sym: str, price: float, s
         await interaction.response.send_message("賣出股數必須大於 0。", ephemeral=True)
         return
 
-    pos = get_position(uid, sym)
-    if pos is None or pos["shares"] == 0:
-        await interaction.response.send_message(f"您目前沒有 `{sym}` 的持倉，無法賣出。", ephemeral=True)
-        return
-    if shares > pos["shares"]:
-        await interaction.response.send_message(
-            f"賣出股數（{shares:,}）超過目前持股（{pos['shares']:,}），請確認後再試。",
-            ephemeral=True,
-        )
-        return
-
-    tx_date = _parse_date(date_str)
+    tx_date = parse_trade_date(date_str)
     if tx_date is None:
         await interaction.response.send_message("日期格式錯誤，請使用 `YYYY-MM-DD`，例如 `2025-05-25`。", ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
     try:
-        info = get_stock_info(sym)
-        is_etf = "ETF" in info["name"].upper()
-    except Exception:
-        is_etf = False
+        result = record_sell(uid, sym, price, shares, tx_date)
+    except NoPositionError:
+        await interaction.followup.send(f"您目前沒有 `{sym}` 的持倉，無法賣出。", ephemeral=True)
+        return
+    except OversellError as e:
+        await interaction.followup.send(
+            f"賣出股數（{e.requested:,}）超過目前持股（{e.available:,}），請確認後再試。",
+            ephemeral=True,
+        )
+        return
 
-    txs = list_transactions(uid, sym)
-    is_daytrade = any(t["type"] == "buy" and t["date"] == tx_date for t in txs)
-
-    fee = calculate_fee(price, shares)
-    tax = calculate_tax(price, shares, is_etf, is_daytrade)
-    net_proceeds = price * shares - fee - tax
-    sell_cost, new_avg = _calc_sell_cost_and_new_avg(txs, shares)
-    this_pnl = net_proceeds - sell_cost
-
-    new_shares = pos["shares"] - shares
-    new_realized = pos["realized_pnl"] + this_pnl
-
-    add_transaction(uid, sym, "sell", price, shares, tx_date, fee, tax)
-    upsert_position(uid, sym, new_avg, new_shares, new_realized)
-
-    if is_etf and is_daytrade:
-        tax_label = "ETF 當沖 0.05%"
-    elif is_etf:
-        tax_label = "ETF 0.1%"
-    elif is_daytrade:
-        tax_label = "現股當沖 0.15%"
-    else:
-        tax_label = "一般股票 0.3%"
-
-    pnl_sign = "+" if this_pnl >= 0 else ""
-    pnl_pct = this_pnl / sell_cost * 100 if sell_cost > 0 else 0
+    position = result.position
+    pnl_sign = "+" if position.pnl >= 0 else ""
 
     msg = (
         f"✅ **賣出成功**　`{sym}`\n"
         f"賣出股數　`{shares:,} 股` @ `{price:,.2f} 元`\n"
-        f"手續費　　`{fee:,} 元`\n"
-        f"證交稅　　`{tax:,} 元`（{tax_label}）\n"
-        f"本次損益　`{pnl_sign}{this_pnl:,.0f} 元`（{pnl_sign}{pnl_pct:.2f}%）\n"
-        f"剩餘持股　`{new_shares:,} 股`　（交易日期：{tx_date}）"
+        f"手續費　　`{position.fee:,} 元`\n"
+        f"證交稅　　`{position.tax:,} 元`（{position.tax_label}）\n"
+        f"本次損益　`{pnl_sign}{position.pnl:,.0f} 元`（{pnl_sign}{position.pnl_pct:.2f}%）\n"
+        f"剩餘持股　`{position.shares:,} 股`　（交易日期：{result.date}）"
     )
-    if is_daytrade:
+    if position.is_daytrade:
         msg += "\n⚡ **偵測到當沖交易**，已套用減半稅率。"
     await interaction.followup.send(msg, ephemeral=True)
 

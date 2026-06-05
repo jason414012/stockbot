@@ -7,6 +7,7 @@ import pandas as pd
 
 import state
 from config import TW
+from domain.trading import calculate_fee, calculate_tax
 
 logger = logging.getLogger(__name__)
 
@@ -219,21 +220,6 @@ def search_by_name(keyword: str) -> pd.DataFrame:
     if not index_matches.empty:
         stock_matches = pd.concat([index_matches, stock_matches], ignore_index=True)
     return stock_matches.reset_index(drop=True)
-
-
-def calculate_fee(price: float, shares: int) -> int:
-    """手續費：0.1425%，最低 20 元，四捨五入。"""
-    return max(round(price * shares * 0.001425), 20)
-
-
-def calculate_tax(price: float, shares: int, is_etf: bool, is_daytrade: bool) -> int:
-    """證交稅（賣出才有）：去尾法，最低 1 元。
-    一般股票 0.3%、ETF 0.1%；現股當沖各減半。
-    """
-    rate = 0.001 if is_etf else 0.003
-    if is_daytrade:
-        rate /= 2
-    return max(int(price * shares * rate), 1)
 
 
 def format_value(val: float) -> str:
