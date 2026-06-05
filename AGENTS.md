@@ -12,12 +12,6 @@ StockBot is a Discord bot for Taiwan stock market monitoring and portfolio manag
 python main.py
 ```
 
-After installing the package in editable mode, this also works:
-
-```bash
-python -m stockbot.main
-```
-
 Requires a `.env` with all four variables set:
 - `DISCORD_TOKEN`
 - `FUGLE_API_KEY`

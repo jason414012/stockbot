@@ -72,12 +72,6 @@ python main.py
 
 Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
 
-若你是開發者，且已用 `pip install -e .` 安裝本專案，也可以改用 package 入口：
-
-```bash
-python -m stockbot.main
-```
-
 ---
 
 ## 專案架構
