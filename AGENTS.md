@@ -35,17 +35,18 @@ Focused modules with lightweight layering:
 | `domain/alerts.py` | Pure alert rules: target direction, trigger checks, volatility threshold checks |
 | `domain/trading.py` | Pure trading business rules: date parsing, fees, taxes, LIFO lots, position math |
 | `services/portfolio_service.py` | Coordinates trading rules with DB writes and quote lookups for buy/sell flows |
-| `commands.py` | Discord slash command handlers and response formatting; `bot.tree.add_command(group)` calls at end of file |
+| `commands.py` | Slash command registration entrypoint; imports command modules and calls `bot.tree.add_command(group)` |
+| `bot_commands/` | Discord slash command handlers split by feature (`quote`, `alerts`, `watchlist`, `trade`, `sector`, `menu`) plus shared UI helpers |
 | `tasks.py` | Seven background `asyncio` tasks that fire on schedules |
 | `main.py` | Wires everything: initializes DB, preloads state, registers tasks, starts bot |
 
-**Command registration:** `main.py` does `import commands  # noqa: F401` — the import itself executes all decorators and `bot.tree.add_command()` calls at module level. Nothing further is needed.
+**Command registration:** `main.py` does `import commands  # noqa: F401` — that import loads `bot_commands/*` modules, executes direct command decorators, and registers grouped commands in `commands.py`. Nothing further is needed.
 
 **Async/sync boundary:** All Fugle API calls are synchronous. High-frequency task quote lookups use `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. The weekly report task still calls `get_candles()` / `get_stock_info()` synchronously while building reports. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
 
 **Layering:** keep pure business rules in `domain/` free of Discord, Fugle, SQLite, and `.env` dependencies. Application services in `services/` may coordinate `db.py` and `data.py`. Discord commands and scheduled tasks should stay as orchestration/formatting layers.
 
-**Shared utilities:** `display.py` contains CJK-aware formatting functions used by both `commands.py` and `tasks.py`. This avoids circular imports.
+**Shared utilities:** `display.py` contains CJK-aware formatting functions used by command modules and `tasks.py`. Command-specific pagination and quote embed helpers live in `bot_commands/common.py`.
 
 **Logging:** All modules use Python's `logging` module (configured in `config.py`). Use `logger = logging.getLogger(__name__)` in each module.
 
@@ -79,7 +80,7 @@ Focused modules with lightweight layering:
 
 **Taiwan market hours:** `data.is_trading_hours()` — weekdays 09:00–13:30 Asia/Taipei.
 
-**Symbol detection:** `_looks_like_symbol()` in `commands.py` matches pure digits (股票代號) or `IX\d+` pattern (指數代號 like `IX0001`).
+**Symbol detection:** `looks_like_symbol()` in `bot_commands/common.py` matches pure digits (股票代號) or `IX\d+` pattern (指數代號 like `IX0001`).
 
 **CJK display width:** `cjk_width()` / `pad_right()` / `pad_left()` in `display.py` count full-width chars as 2. `format_table()` uses these for aligned monospace output. Match this pattern when adding tabular output.
 
@@ -102,12 +103,12 @@ All tasks share a single `_wait_ready()` before-loop hook that calls `await stat
 All db functions use descriptive names: `add_watchlist`, `remove_watchlist`, `list_user_alerts`, `add_transaction`, `get_position`, etc. Connection handling uses a shared `_connect()` helper with `sqlite3.Row` factory.
 
 - `watchlist(user_id, symbol, added_at)` — PK (user_id, symbol); max `MAX_WATCHLIST_SIZE` per user enforced in commands
-- `price_alerts(id, user_id, symbol, target, direction)` — direction is `'above'` or `'below'`; auto-deleted on trigger; max `MAX_ALERTS_PER_SYMBOL` per user per symbol
-- `transactions(id, user_id, symbol, type, price, shares, transaction_date, fee, tax)`
+- `price_alerts(id, user_id, symbol, target, direction)` — direction is `'above'` or `'below'`; auto-deleted on trigger; max `MAX_ALERTS_PER_SYMBOL` per user per symbol; indexed by `symbol`
+- `transactions(id, user_id, symbol, type, price, shares, transaction_date, fee, tax)` — type is `'buy'` or `'sell'`; indexed by `(user_id, symbol, transaction_date)`
 - `positions(user_id, symbol, avg_cost, shares, realized_pnl)` — PK (user_id, symbol)
 - `pushed_news(news_id, pushed_at)` — 3-day TTL purged on load
 
-## Slash Commands (commands.py)
+## Slash Commands (`bot_commands/`)
 
 - `/q <symbol|name>` — direct quote if symbol-like; name search uses `SearchPageView` for multiple results (`PAGE_SIZE`/page, 120s timeout)
 - `/symbol <s1> [s2..s5]` — side-by-side compare; indices and stocks rendered in separate code blocks
@@ -117,7 +118,7 @@ All db functions use descriptive names: `add_watchlist`, `remove_watchlist`, `li
 - `/sector list|search` — browse 38 industry sectors with paginated `SectorPageView`
 - `/menu` — help text listing all commands and auto-push schedule
 
-**UI patterns:** `PageView` is a shared base class for pagination (used by `SearchPageView` and `SectorPageView`). `_add_quote_field(embed, info)` is the shared helper for adding stock/index quote fields to embeds.
+**UI patterns:** `PageView` is a shared base class for pagination (used by `SearchPageView` and `SectorPageView`). `add_quote_field(embed, info)` is the shared helper for adding stock/index quote fields to embeds.
 
 ## Dependencies
 
