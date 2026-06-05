@@ -19,7 +19,7 @@
 
 ### 1. Python
 
-需要 Python 3.11 以上（使用 `zoneinfo` 標準函式庫）。
+需要 Python 3.11 以上（使用 `zoneinfo` 標準函式庫）；目前已在 Python 3.14.5 測試通過。
 
 ### 2. Discord Bot
 

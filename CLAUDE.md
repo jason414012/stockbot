@@ -22,7 +22,7 @@ The bot validates `DISCORD_TOKEN` and `FUGLE_API_KEY` on startup and exits if ei
 
 ## Architecture
 
-Eight focused modules with clear boundaries:
+Nine focused modules with clear boundaries:
 
 | Module | Responsibility |
 |---|---|
@@ -38,7 +38,7 @@ Eight focused modules with clear boundaries:
 
 **Command registration:** `main.py` does `import commands  # noqa: F401` — the import itself executes all decorators and `bot.tree.add_command()` calls at module level. Nothing further is needed.
 
-**Async/sync boundary:** All Fugle API calls are synchronous. `tasks.py` wraps them with `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
+**Async/sync boundary:** All Fugle API calls are synchronous. High-frequency task quote lookups use `loop.run_in_executor(None, fn, arg)` to avoid blocking the event loop. The weekly report task still calls `get_candles()` / `get_stock_info()` synchronously while building reports. Commands use `await interaction.response.defer()` then call the sync API directly (acceptable since command handlers run in the event loop thread but Discord tolerates brief blocking for defer'd responses).
 
 **Shared utilities:** `display.py` contains CJK-aware formatting functions used by both `commands.py` and `tasks.py`. This avoids circular imports.
 
@@ -64,7 +64,7 @@ Eight focused modules with clear boundaries:
 - `pushed_news_ids` — in-memory set loaded from DB at startup (3-day lookback); `pushed_news` table entries older than 3 days are purged on load
 - `breaking_checked_ids` — reset daily via `breaking_last_reset_date` in `state.py`
 
-**Task deduplication pattern:** Time-triggered tasks (`market_open_push`, `market_close_push`, `weekly_report_push`) run on a 1-minute loop and check the clock inside the handler. They guard against double-fire across restarts with a date/week-number stored in `state.*_pushed_date` variables.
+**Task deduplication pattern:** Time-triggered tasks (`market_open_push`, `market_close_push`, `weekly_report_push`) run on a 1-minute loop and check the clock inside the handler. They guard against double-fire within the current process using date/week-number values stored in `state.py`; these guards are in-memory and reset when the bot restarts.
 
 **Taiwan market hours:** `data.is_trading_hours()` — weekdays 09:00–13:30 Asia/Taipei.
 
@@ -98,7 +98,7 @@ All db functions use descriptive names: `add_watchlist`, `remove_watchlist`, `li
 
 ## Slash Commands (commands.py)
 
-- `/q <symbol|name>` — direct quote if symbol-like; name search with paginated `SearchPageView` (`PAGE_SIZE`/page, 120s timeout) if ≥15 results
+- `/q <symbol|name>` — direct quote if symbol-like; name search uses `SearchPageView` for multiple results (`PAGE_SIZE`/page, 120s timeout)
 - `/symbol <s1> [s2..s5]` — side-by-side compare; indices and stocks rendered in separate code blocks
 - `/alert set|list|remove` — price target alerts; direction auto-detected from current price vs target
 - `/watch add|remove|list|clear` — personal watchlist
@@ -119,5 +119,7 @@ python-dotenv
 ```
 
 Install: `pip install -r requirements.txt`
+
+Python: requires 3.11+; tested with Python 3.14.5.
 
 SQLite database file: `watchlist.db` in the project root (path set in `config.DB_FILE`).
