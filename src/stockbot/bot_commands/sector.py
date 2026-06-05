@@ -3,8 +3,8 @@ import logging
 import discord
 from discord import app_commands
 
-from config import PAGE_SIZE
-from data import get_sector_data
+from ..config import PAGE_SIZE
+from ..data import get_sector_data
 
 from .common import PageView
 

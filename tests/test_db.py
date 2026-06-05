@@ -3,10 +3,12 @@ import sqlite3
 import tempfile
 import unittest
 
+import _path  # noqa: F401
+
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("FUGLE_API_KEY", "test-key")
 
-import db  # noqa: E402
+from stockbot import db  # noqa: E402
 
 
 class DbTransactionTest(unittest.TestCase):

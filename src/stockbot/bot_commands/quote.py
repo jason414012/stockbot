@@ -3,10 +3,10 @@ import logging
 import discord
 from discord import app_commands
 
-from config import MAX_COMPARE_SYMBOLS, PAGE_SIZE
-from data import format_value, get_stock_info, search_by_name
-from display import format_table
-from state import bot
+from ..config import MAX_COMPARE_SYMBOLS, PAGE_SIZE
+from ..data import format_value, get_stock_info, search_by_name
+from ..display import format_table
+from ..state import bot
 
 from .common import PageView, build_quote_embed, looks_like_symbol
 

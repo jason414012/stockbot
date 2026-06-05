@@ -3,10 +3,10 @@ import logging
 import discord
 from discord import app_commands
 
-import state
-from config import MAX_WATCHLIST_SIZE
-from data import get_stock_info
-from db import add_watchlist, clear_watchlist, remove_watchlist
+from .. import state
+from ..config import MAX_WATCHLIST_SIZE
+from ..data import get_stock_info
+from ..db import add_watchlist, clear_watchlist, remove_watchlist
 
 from .common import add_quote_field
 

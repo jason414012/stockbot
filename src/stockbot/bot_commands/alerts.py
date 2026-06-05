@@ -1,10 +1,10 @@
 import discord
 from discord import app_commands
 
-from config import MAX_ALERTS_PER_SYMBOL
-from data import get_stock_info
-from db import add_alert, list_user_alerts, remove_alert
-from domain.alerts import get_alert_direction
+from ..config import MAX_ALERTS_PER_SYMBOL
+from ..data import get_stock_info
+from ..db import add_alert, list_user_alerts, remove_alert
+from ..domain.alerts import get_alert_direction
 
 
 alert_group = app_commands.Group(name="alert", description="價格到價警示管理")

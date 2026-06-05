@@ -4,8 +4,8 @@ import logging
 import discord
 import feedparser
 
-from config import NEWS_SOURCES, BREAKING_KEYWORDS
-from market_types import NewsItem
+from .config import NEWS_SOURCES, BREAKING_KEYWORDS
+from .market_types import NewsItem
 
 logger = logging.getLogger(__name__)
 

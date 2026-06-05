@@ -2,9 +2,9 @@ import re
 
 import discord
 
-from config import PAGE_SIZE
-from data import format_value
-from market_types import QuoteInfo
+from ..config import PAGE_SIZE
+from ..data import format_value
+from ..market_types import QuoteInfo
 
 
 def looks_like_symbol(text: str) -> bool:

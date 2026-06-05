@@ -1,9 +1,9 @@
 import discord
 from discord import app_commands
 
-from config import HISTORY_DISPLAY_LIMIT
-from data import get_stock_info
-from db import (
+from ..config import HISTORY_DISPLAY_LIMIT
+from ..data import get_stock_info
+from ..db import (
     get_position,
     list_all_transactions,
     list_positions,
@@ -11,8 +11,8 @@ from db import (
     remove_all_positions,
     remove_position,
 )
-from domain.trading import calculate_fee, calculate_tax, parse_trade_date
-from services.portfolio_service import (
+from ..domain.trading import calculate_fee, calculate_tax, parse_trade_date
+from ..services.portfolio_service import (
     NoPositionError,
     OversellError,
     UnknownSymbolError,

@@ -1,6 +1,7 @@
 import unittest
 
-from domain.alerts import get_alert_direction, is_price_alert_triggered, is_volatile
+import _path  # noqa: F401
+from stockbot.domain.alerts import get_alert_direction, is_price_alert_triggered, is_volatile
 
 
 class AlertRulesTest(unittest.TestCase):

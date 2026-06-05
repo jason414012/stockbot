@@ -1,5 +1,6 @@
 import logging
 import os
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -41,7 +42,8 @@ TW = ZoneInfo("Asia/Taipei")
 #  資料庫
 # ════════════════════════════════════════════════════════
 
-DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "watchlist.db")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DB_FILE = str(PROJECT_ROOT / "watchlist.db")
 
 # ════════════════════════════════════════════════════════
 #  新聞來源

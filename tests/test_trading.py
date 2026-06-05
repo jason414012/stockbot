@@ -1,7 +1,8 @@
 import unittest
 from datetime import date
 
-from domain.trading import (
+import _path  # noqa: F401
+from stockbot.domain.trading import (
     calculate_buy_position,
     calculate_fee,
     calculate_sell_position,

@@ -1,6 +1,6 @@
 import discord
 
-from state import bot
+from ..state import bot
 
 
 @bot.tree.command(name="menu", description="顯示所有指令說明")

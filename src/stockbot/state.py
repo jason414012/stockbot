@@ -5,8 +5,8 @@ import pandas as pd
 from discord.ext import commands
 from fugle_marketdata import RestClient
 
-from config import DISCORD_TOKEN, FUGLE_API_KEY
-from market_types import SectorStock
+from .config import DISCORD_TOKEN, FUGLE_API_KEY
+from .market_types import SectorStock
 
 # ════════════════════════════════════════════════════════
 #  Bot 與 API Client
