@@ -95,14 +95,12 @@ Bot 啟動後會自動同步 Slash Commands 並啟動所有排程任務。
 
 ## 開發與測試
 
-核心交易與警示規則位於 `src/stockbot/domain/`，可不依賴 Discord 或 Fugle API 直接測試；資料庫交易一致性則使用臨時 SQLite 檔案測試。
+修改程式後建議先執行單元測試，確認核心商業邏輯、資料庫操作與排程註冊仍正常。
+此指令只會跑測試，不會啟動 Discord Bot，也不需要連線到實際伺服器。
 
 ```bash
 python -m unittest discover -s tests
-python -m py_compile main.py
 ```
-
-目前測試涵蓋交易日期解析、手續費、證交稅、LIFO 成本計算、買賣持倉計算、價格警示、波動門檻判斷、market helper、排程任務註冊，以及交易紀錄與持倉寫入的 SQLite transaction rollback。
 
 ---
 
