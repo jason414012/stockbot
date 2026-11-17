@@ -33,8 +33,5 @@ index_list_date:  date | None         = None
 sector_cache: dict[str, list[SectorStock]] | None = None
 sector_cache_date: date | None              = None
 
-market_open_pushed_date:  date | None = None
-market_close_pushed_date: date | None = None
 breaking_checked_ids: set[str] = set()
 breaking_last_reset_date: date | None = None
-weekly_report_pushed_week: int | None = None

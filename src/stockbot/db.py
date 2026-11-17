@@ -65,11 +65,32 @@ def init_db():
                 realized_pnl  REAL    NOT NULL DEFAULT 0,
                 PRIMARY KEY (user_id, symbol)
             );
+            CREATE TABLE IF NOT EXISTS bot_meta (
+                key   TEXT NOT NULL PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_price_alerts_symbol ON price_alerts(symbol);
             CREATE INDEX IF NOT EXISTS idx_transactions_user_symbol_date
                 ON transactions(user_id, symbol, transaction_date);
         """)
     logger.info("SQLite 資料庫已就緒：%s", DB_FILE)
+
+
+# ── 定時推播已發送標記（跨重啟保留）─────────────────────────────────────────
+
+
+def get_meta(key: str) -> str | None:
+    with _connect() as con:
+        row = con.execute("SELECT value FROM bot_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(key: str, value: str):
+    with _connect() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO bot_meta (key, value) VALUES (?, ?)",
+            (key, value)
+        )
 
 
 # ── 已推播新聞 ────────────────────────────────────────────────────────────────

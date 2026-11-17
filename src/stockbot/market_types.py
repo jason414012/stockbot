@@ -1,4 +1,4 @@
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 
 class QuoteInfo(TypedDict):
@@ -10,6 +10,11 @@ class QuoteInfo(TypedDict):
     volume: float | None
     value: float | None
     is_index: bool
+    # 當日日期與開高低（週報補今日 K 棒用）
+    date: NotRequired[str | None]
+    open: NotRequired[float | None]
+    high: NotRequired[float | None]
+    low: NotRequired[float | None]
 
 
 class SectorStock(TypedDict):
@@ -25,3 +30,4 @@ class NewsItem(TypedDict):
     source: str
     category: str
     published: str
+    ts: NotRequired[int]  # 發布時間（UTC 秒），排序用

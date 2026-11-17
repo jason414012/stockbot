@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import logging
 
 import discord
@@ -21,6 +22,7 @@ def _fetch_news_sync(max_per_source: int = 5) -> list[NewsItem]:
             feed = feedparser.parse(src["url"])
             for entry in feed.entries[:max_per_source]:
                 news_id = entry.get("id") or entry.get("link", "")
+                parsed = entry.get("published_parsed") or entry.get("updated_parsed")
                 all_news.append({
                     "id":        news_id,
                     "title":     entry.get("title", "（無標題）").strip(),
@@ -28,6 +30,7 @@ def _fetch_news_sync(max_per_source: int = 5) -> list[NewsItem]:
                     "source":    src["name"],
                     "category":  src.get("category", ""),
                     "published": entry.get("published", ""),
+                    "ts":        calendar.timegm(parsed) if parsed else 0,
                 })
         except Exception as e:
             logger.warning("抓取 %s RSS 失敗：%s", src['name'], e)
@@ -42,6 +45,13 @@ async def fetch_latest_news(max_per_source: int = 5) -> list[NewsItem]:
 # ════════════════════════════════════════════════════════
 #  重大新聞判斷
 # ════════════════════════════════════════════════════════
+
+
+def pick_latest_news(news_list: list[NewsItem], category: str, size: int) -> list[NewsItem]:
+    """取指定類別、依發布時間由新到舊的前 size 則（晨報／收盤總整理用）。"""
+    picked = [n for n in news_list if n.get("category") == category]
+    picked.sort(key=lambda n: n.get("ts", 0), reverse=True)
+    return picked[:size]
 
 
 def is_breaking_news(title: str) -> bool:

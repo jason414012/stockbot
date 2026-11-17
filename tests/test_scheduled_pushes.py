@@ -1,0 +1,196 @@
+import asyncio
+import os
+import tempfile
+import unittest
+from datetime import date, datetime
+from unittest import mock
+
+import _path  # noqa: F401
+
+os.environ.setdefault("DISCORD_TOKEN", "test-token")
+os.environ.setdefault("FUGLE_API_KEY", "test-key")
+
+from stockbot.config import TW  # noqa: E402
+from stockbot.market_clock import in_time_window, is_trading_hours  # noqa: E402
+
+try:
+    import pandas as pd
+    from stockbot import db, state
+    from stockbot.news import pick_latest_news
+    from stockbot.tasks import news as news_tasks
+    from stockbot.tasks import reports
+except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime deps
+    if exc.name in {"discord", "fugle_marketdata", "feedparser", "pandas"}:
+        raise unittest.SkipTest(f"optional runtime dependency not installed: {exc.name}")
+    raise
+
+
+def tw(*args) -> datetime:
+    return datetime(*args, tzinfo=TW)
+
+
+class FakeDatetime(datetime):
+    current: datetime = tw(2026, 11, 16, 9, 0)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.current
+
+
+class FakeChannel:
+    def __init__(self):
+        self.sent: list = []
+
+    async def send(self, content=None, embed=None):
+        self.sent.append(content if content is not None else embed.title)
+
+
+class FakeBot:
+    def __init__(self, channel):
+        self.channel = channel
+
+    def get_channel(self, _channel_id):
+        return self.channel
+
+
+class MarketClockTest(unittest.TestCase):
+    def test_close_grace_extends_trading_hours(self):
+        self.assertFalse(is_trading_hours(tw(2026, 11, 16, 13, 33)))
+        self.assertTrue(is_trading_hours(tw(2026, 11, 16, 13, 33), close_grace_min=5))
+        self.assertFalse(is_trading_hours(tw(2026, 11, 16, 13, 36), close_grace_min=5))
+
+    def test_in_time_window(self):
+        self.assertTrue(in_time_window(tw(2026, 11, 16, 9, 0), 9, 0, 30))
+        self.assertTrue(in_time_window(tw(2026, 11, 16, 9, 29), 9, 0, 30))
+        self.assertFalse(in_time_window(tw(2026, 11, 16, 9, 30), 9, 0, 30))
+        self.assertFalse(in_time_window(tw(2026, 11, 16, 8, 59), 9, 0, 30))
+
+
+class PushTestBase(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = mock.patch.object(db, "DB_FILE", os.path.join(self.tmp.name, "test.db"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        db.init_db()
+
+        self.channel = FakeChannel()
+        for target, attr, value in [
+            (state, "bot", FakeBot(self.channel)),
+            (state, "pushed_news_ids", set()),
+            (state, "watchlist", {}),
+        ]:
+            p = mock.patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+
+class MetaTest(PushTestBase):
+    def test_meta_round_trip(self):
+        self.assertIsNone(db.get_meta("k"))
+        db.set_meta("k", "1")
+        db.set_meta("k", "2")
+        self.assertEqual(db.get_meta("k"), "2")
+
+
+class DigestTest(PushTestBase):
+    NEWS = [
+        {"id": f"f{i}", "title": f"F{i}", "link": "", "source": "s",
+         "category": "財經", "published": "", "ts": i}
+        for i in range(8)
+    ] + [{"id": "w", "title": "W", "link": "", "source": "s",
+          "category": "國際", "published": "", "ts": 99}]
+
+    def setUp(self):
+        super().setUp()
+
+        async def fake_fetch(max_per_source=5):
+            return self.NEWS
+
+        for attr, value in [("fetch_latest_news", fake_fetch), ("datetime", FakeDatetime)]:
+            p = mock.patch.object(news_tasks, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_open(self, now):
+        FakeDatetime.current = now
+        asyncio.run(news_tasks.market_open_push.coro())
+
+    def test_pick_latest_news_filters_category_and_sorts(self):
+        picked = pick_latest_news(self.NEWS, "財經", 3)
+        self.assertEqual([n["id"] for n in picked], ["f7", "f6", "f5"])
+
+    def test_digest_includes_already_pushed_and_catches_up(self):
+        state.pushed_news_ids.update({"f7", "f6"})
+        self.run_open(tw(2026, 11, 16, 9, 12))  # restarted after 09:00
+        self.assertIn("最新 5 則", self.channel.sent[0])
+        self.assertEqual(self.channel.sent[1:], ["F7", "F6", "F5", "F4", "F3"])
+        self.assertEqual(db.get_meta("market_open_pushed"), "2026-11-16")
+
+    def test_digest_sends_once_per_day(self):
+        self.run_open(tw(2026, 11, 16, 9, 0))
+        sent = len(self.channel.sent)
+        self.run_open(tw(2026, 11, 16, 9, 5))
+        self.assertEqual(len(self.channel.sent), sent)
+
+    def test_digest_skips_outside_window_and_weekend(self):
+        self.run_open(tw(2026, 11, 16, 9, 30))
+        self.run_open(tw(2026, 11, 21, 9, 0))  # Saturday
+        self.assertEqual(self.channel.sent, [])
+
+
+class WeeklyReportTest(PushTestBase):
+    FRIDAY = tw(2026, 11, 20, 14, 5)
+
+    def candles(self):
+        days = [date(2026, 11, 12), date(2026, 11, 13), date(2026, 11, 16),
+                date(2026, 11, 17), date(2026, 11, 18), date(2026, 11, 19)]
+        return pd.DataFrame([
+            {"date": pd.Timestamp(d), "open": 100 + i, "high": 110 + i,
+             "low": 90 + i, "close": 105 + i}
+            for i, d in enumerate(days)
+        ])
+
+    def test_weekly_row_uses_this_week_and_fills_today(self):
+        quote = {"name": "台積電", "price": 120.0, "date": "2026-11-20",
+                 "open": 119, "high": 130, "low": 95}
+        with mock.patch.object(reports, "get_candles", lambda s, days=10: self.candles()), \
+                mock.patch.object(reports, "get_stock_info", lambda s: quote):
+            row = reports.weekly_row("2330", now=self.FRIDAY)
+        # 週一 11/16 開盤 102 → 今日補上的收盤 120
+        self.assertEqual(row["週漲跌%"], f"{(120 - 102) / 102 * 100:+.2f}")
+        self.assertEqual((row["週高"], row["週低"], row["收盤"]), ("130.00", "92.00", "120.00"))
+
+    def test_weekly_row_does_not_fill_stale_quote(self):
+        quote = {"name": "台積電", "price": 120.0, "date": "2026-11-19",
+                 "open": 1, "high": 1, "low": 1}
+        with mock.patch.object(reports, "get_candles", lambda s, days=10: self.candles()), \
+                mock.patch.object(reports, "get_stock_info", lambda s: quote):
+            row = reports.weekly_row("2330", now=self.FRIDAY)
+        self.assertEqual((row["週高"], row["收盤"]), ("115.00", "110.00"))
+
+    def test_weekly_push_dedupes_symbols_and_sends_once_per_week(self):
+        state.watchlist.update({1: ["2330"], 2: ["2330", "9999"]})
+        calls = []
+
+        def fake_row(sym):
+            calls.append(sym)
+            if sym == "9999":
+                raise RuntimeError("boom")
+            return {"代號": sym, "名稱": "n", "週漲跌%": "+1.00",
+                    "週高": "1", "週低": "1", "收盤": "1"}
+
+        FakeDatetime.current = self.FRIDAY
+        with mock.patch.object(reports, "weekly_row", fake_row), \
+                mock.patch.object(reports, "datetime", FakeDatetime):
+            asyncio.run(reports.weekly_report_push.coro())
+            asyncio.run(reports.weekly_report_push.coro())
+
+        self.assertEqual(sorted(calls), ["2330", "9999"])
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertEqual(db.get_meta(reports.WEEKLY_META_KEY), "2026-W47")
+
+
+if __name__ == "__main__":
+    unittest.main()

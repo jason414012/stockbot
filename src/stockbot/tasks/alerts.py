@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 @tasks.loop(minutes=2)
 async def price_alert_scan():
-    if not is_trading_hours():
+    # 延長至 13:35，涵蓋 13:30 收盤撮合價
+    if not is_trading_hours(close_grace_min=5):
         return
 
     alerts = list_all_alerts()

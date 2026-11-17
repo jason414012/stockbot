@@ -151,6 +151,10 @@ def _get_index_quote(symbol: str) -> QuoteInfo:
         "volume": None,
         "value": None,
         "is_index": True,
+        "date": data.get("date"),
+        "open": data.get("openPrice"),
+        "high": data.get("highPrice"),
+        "low": data.get("lowPrice"),
     }
 
 
@@ -174,6 +178,10 @@ def get_stock_info(symbol: str) -> QuoteInfo:
         ),
         "value": data["total"]["tradeValue"],
         "is_index": False,
+        "date": data.get("date"),
+        "open": data.get("openPrice"),
+        "high": data.get("highPrice"),
+        "low": data.get("lowPrice"),
     }
 
 
