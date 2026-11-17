@@ -23,3 +23,12 @@ logs/
 # IDE
 .vscode/
 .idea/
+
+# BMad / Claude Code
+.claude/
+_bmad/
+_bmad-output/
+
+# AI 代理說明
+AGENTS.md
+CLAUDE.md
