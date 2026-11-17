@@ -157,7 +157,8 @@ class AutoNewsPushTest(PushTestBase):
         super().setUp()
 
         async def fake_fetch(max_per_source=5):
-            return self.NEWS
+            # 模擬單一 RSS 來源依 max_per_source 截斷
+            return self.NEWS[:max_per_source]
 
         self.trading = True
         for attr, value in [("fetch_latest_news", fake_fetch),
@@ -195,6 +196,19 @@ class AutoNewsPushTest(PushTestBase):
         self.assertEqual(titles.count("央行宣布降息"), 1)
         self.assertEqual(titles.count("一般新聞"), 1)
         self.assertEqual(sum(bool(c and c.startswith(self.HEADER)) for c, _ in self.channel.calls), 1)
+
+    def test_breaking_news_ranked_fifth_still_pushed(self):
+        # 重大新聞只剩 auto_news_push 這條路徑；每來源抓少於 5 則會漏掉排名較後的速報
+        self.NEWS = [
+            {"id": f"n{i}", "title": f"一般新聞{i}", "link": "", "source": "s",
+             "category": "財經", "published": "", "ts": 10 - i}
+            for i in range(4)
+        ] + [{"id": "b5", "title": "央行宣布降息", "link": "", "source": "s",
+              "category": "財經", "published": "", "ts": 1}]
+        self.run_push()
+        calls = self.news_calls()
+        self.assertIn("央行宣布降息", calls)
+        self.assertTrue(calls["央行宣布降息"].startswith(self.HEADER))
 
     def test_breaking_news_scan_task_removed(self):
         # 舊的獨立速報任務會重推 auto_news_push 推過的新聞，不得再存在

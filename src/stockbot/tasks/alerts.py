@@ -35,7 +35,7 @@ async def price_alert_scan():
         try:
             infos[sym] = await get_stock_info_async(sym)
         except Exception as e:
-            logger.warning("價格警示報價取得失敗（%s）：%s", sym, e)
+            logger.warning("價格警示報價取得失敗（%s）：%r", sym, e)
 
     for alert in alerts:
         sym = alert["symbol"]
@@ -92,7 +92,7 @@ async def watchlist_volatility_alert():
         try:
             prices_info[sym] = await get_stock_info_async(sym)
         except Exception as e:
-            logger.warning("波動警示報價取得失敗（%s）：%s", sym, e)
+            logger.warning("波動警示報價取得失敗（%s）：%r", sym, e)
 
     for uid, symbols in state.watchlist.items():
         if not symbols:
@@ -121,7 +121,7 @@ async def watchlist_volatility_alert():
                     alerts.append(line)
                     new_levels.append((key, level))
             except Exception as e:
-                logger.warning("波動警示處理失敗（%s）：%s", sym, e)
+                logger.warning("波動警示處理失敗（%s）：%r", sym, e)
 
         if not alerts:
             continue
