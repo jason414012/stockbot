@@ -217,7 +217,7 @@ class AlertTaskTestBase(PushTestBase):
             (alert_tasks, "get_stock_info_async", fake_quote),
             (alert_tasks, "is_trading_hours", lambda **kw: True),
             (alert_tasks, "datetime", FakeDatetime),
-            (state, "volatility_alerted", set()),
+            (state, "volatility_notified", {}),
             (state, "volatility_last_reset_date", None),
         ]:
             p = mock.patch.object(target, attr, value)
@@ -235,17 +235,57 @@ class VolatilityAlertTest(AlertTaskTestBase):
             FakeDatetime.current = now
         asyncio.run(alert_tasks.watchlist_volatility_alert.coro())
 
-    def test_alerts_once_per_user_symbol_per_day(self):
+    def test_same_level_not_repeated_but_step_up_alerts(self):
         state.watchlist.update({1: ["2330"]})
         self.quotes["2330"] = self.quote(4.0)
         self.run_scan()
         self.assertEqual(len(self.channel.sent), 1)
         self.assertIn("2330", self.channel.sent[0])
-        self.assertIn((1, "2330"), state.volatility_alerted)
+        self.assertEqual(state.volatility_notified[(1, "2330")], 3.0)
 
-        # 同日下一輪仍漲 4%：不再 @ 使用者，且整則訊息不發
+        # 同級距（仍 +4%）：不再 @ 使用者，且整則訊息不發
         self.run_scan(tw(2026, 11, 16, 10, 5))
         self.assertEqual(len(self.channel.sent), 1)
+
+        # 漲幅擴大到 +5.2% 跨過 +5 門檻：再通知一次
+        self.quotes["2330"] = self.quote(5.2)
+        self.run_scan(tw(2026, 11, 16, 10, 10))
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertIn("2330", self.channel.sent[1])
+        self.assertEqual(state.volatility_notified[(1, "2330")], 5.0)
+
+        # +5.5% 仍在 +5 級距：不發
+        self.quotes["2330"] = self.quote(5.5)
+        self.run_scan(tw(2026, 11, 16, 10, 15))
+        self.assertEqual(len(self.channel.sent), 2)
+
+    def test_step_up_message_only_contains_changed_symbol(self):
+        state.watchlist.update({1: ["2330", "2317"]})
+        self.quotes.update({"2330": self.quote(4.0), "2317": self.quote(4.0)})
+        self.run_scan()
+        self.quotes.update({"2330": self.quote(5.2), "2317": self.quote(4.5)})
+        self.run_scan(tw(2026, 11, 16, 10, 5))
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertIn("2330", self.channel.sent[1])
+        self.assertNotIn("2317", self.channel.sent[1])
+
+    def test_reversal_alerts_but_pullback_does_not(self):
+        state.watchlist.update({1: ["2330"]})
+        self.quotes["2330"] = self.quote(5.5)
+        self.run_scan()
+        # 回落但未反向跨 -3%：不通知、紀錄不變
+        for minute, pct in ((5, 3.5), (10, 1.0), (15, -2.0)):
+            self.quotes["2330"] = self.quote(pct)
+            self.run_scan(tw(2026, 11, 16, 10, minute))
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertEqual(state.volatility_notified[(1, "2330")], 5.0)
+
+        # 由漲翻跌跨過 -3%：通知並記錄 -3
+        self.quotes["2330"] = self.quote(-3.1)
+        self.run_scan(tw(2026, 11, 16, 10, 20))
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertIn("-3.10%", self.channel.sent[1])
+        self.assertEqual(state.volatility_notified[(1, "2330")], -3.0)
 
     def test_repeat_round_only_sends_new_symbols(self):
         state.watchlist.update({1: ["2330", "2317"]})
@@ -288,10 +328,11 @@ class VolatilityAlertTest(AlertTaskTestBase):
         with mock.patch.object(self.channel, "send", flaky_send), \
                 self.assertLogs(alert_tasks.logger, "WARNING"):
             self.run_scan()
-            self.assertNotIn((1, "2330"), state.volatility_alerted)
+            self.assertNotIn((1, "2330"), state.volatility_notified)
+            # 下一輪同級距：因未記錄，仍會重送
             self.run_scan(tw(2026, 11, 16, 10, 5))
         self.assertEqual(len(self.channel.sent), 1)
-        self.assertIn((1, "2330"), state.volatility_alerted)
+        self.assertEqual(state.volatility_notified[(1, "2330")], 3.0)
 
     def test_quote_failure_logs_symbol_and_continues(self):
         state.watchlist.update({1: ["9999", "2330"]})

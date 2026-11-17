@@ -4,10 +4,10 @@ from datetime import datetime
 from discord.ext import tasks
 
 from .. import state
-from ..config import ALERT_CHANNEL_ID, TW, VOLATILITY_THRESHOLD_PCT
+from ..config import ALERT_CHANNEL_ID, TW, VOLATILITY_THRESHOLDS_PCT
 from ..data import format_volume_lots, is_trading_hours
 from ..db import delete_alert, list_all_alerts
-from ..domain.alerts import is_price_alert_triggered, is_volatile
+from ..domain.alerts import is_price_alert_triggered, next_volatility_level
 from ..market_types import QuoteInfo
 from .common import get_stock_info_async
 
@@ -79,10 +79,11 @@ async def watchlist_volatility_alert():
         logger.warning("找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
         return
 
-    # 每人每檔每個台北日只推一次（僅存記憶體，重啟當日可能補發一次）
+    # 階梯去重：每人每檔記錄當日上一次通知的帶號級距，同向升階或反轉才再推
+    # （每個台北日重置；僅存記憶體，重啟當日可能補發）
     today = datetime.now(TW).date()
     if state.volatility_last_reset_date != today:
-        state.volatility_alerted.clear()
+        state.volatility_notified.clear()
         state.volatility_last_reset_date = today
 
     all_symbols = list({sym for symbols in state.watchlist.values() for sym in symbols})
@@ -97,16 +98,18 @@ async def watchlist_volatility_alert():
         if not symbols:
             continue
         alerts = []
-        alerted_keys = []
+        new_levels = []
         for sym in symbols:
-            if (uid, sym) in state.volatility_alerted:
-                continue
             info = prices_info.get(sym)
             if info is None:
                 continue
             try:
                 pct = float(info["change_percent"])
-                if is_volatile(pct, VOLATILITY_THRESHOLD_PCT):
+                key = (uid, sym)
+                level = next_volatility_level(
+                    pct, state.volatility_notified.get(key), VOLATILITY_THRESHOLDS_PCT
+                )
+                if level is not None:
                     direction = "🔺" if pct > 0 else "🔻"
                     line = (
                         f'{direction} **{info["name"]}（{sym}）** '
@@ -116,7 +119,7 @@ async def watchlist_volatility_alert():
                     if vol:
                         line += f"，成交量 `{vol}`"
                     alerts.append(line)
-                    alerted_keys.append((uid, sym))
+                    new_levels.append((key, level))
             except Exception as e:
                 logger.warning("波動警示處理失敗（%s）：%s", sym, e)
 
@@ -129,6 +132,6 @@ async def watchlist_volatility_alert():
                 + "\n".join(alerts)
             )
             await alert_channel.send(msg)
-            state.volatility_alerted.update(alerted_keys)
+            state.volatility_notified.update(new_levels)
         except Exception as e:
             logger.warning("自選股波動頻道通知失敗（uid=%s）：%s", uid, e)
