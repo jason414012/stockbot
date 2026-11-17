@@ -10,6 +10,8 @@ class QuoteInfo(TypedDict):
     volume: float | None
     value: float | None
     is_index: bool
+    vol_at_ask: NotRequired[float | None]  # 外盤（買方主動，張）
+    vol_at_bid: NotRequired[float | None]  # 內盤（賣方主動，張）
     # 當日日期與開高低（週報補今日 K 棒用）
     date: NotRequired[str | None]
     open: NotRequired[float | None]

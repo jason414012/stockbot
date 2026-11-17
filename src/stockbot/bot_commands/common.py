@@ -3,7 +3,7 @@ import re
 import discord
 
 from ..config import PAGE_SIZE
-from ..data import format_value
+from ..data import format_bid_ask, format_value
 from ..market_types import QuoteInfo
 
 
@@ -42,6 +42,7 @@ class PageView(discord.ui.View):
 
 
 def add_quote_field(embed: discord.Embed, info: QuoteInfo):
+    """單檔報價欄位（/q 與 /watch list 共用）；個股附內外盤。"""
     sym = info["symbol"]
     arrow = "🔺" if info["change"] >= 0 else "🔻"
     if info.get("is_index"):
@@ -56,17 +57,17 @@ def add_quote_field(embed: discord.Embed, info: QuoteInfo):
         )
     else:
         val_str = format_value(info["value"] or 0)
-        embed.add_field(
-            name=f'{info["name"]}（{sym}）',
-            value=(
-                f'最新價　`{info["price"]} 元`\n'
-                f'漲跌　{arrow} `{info["change"]:+.2f} 元`\n'
-                f'漲跌幅　{arrow} `{info["change_percent"]} %`\n'
-                f'成交量　`{int(info["volume"] or 0)} 張`\n'
-                f'成交額　`{val_str}`'
-            ),
-            inline=True,
+        value = (
+            f'最新價　`{info["price"]} 元`\n'
+            f'漲跌　{arrow} `{info["change"]:+.2f} 元`\n'
+            f'漲跌幅　{arrow} `{info["change_percent"]} %`\n'
+            f'成交量　`{int(info["volume"] or 0)} 張`\n'
+            f'成交額　`{val_str}`'
         )
+        bid_ask = format_bid_ask(info)
+        if bid_ask:
+            value += f'\n內外盤　{bid_ask}'
+        embed.add_field(name=f'{info["name"]}（{sym}）', value=value, inline=True)
 
 
 def build_quote_embed(info: QuoteInfo) -> discord.Embed:

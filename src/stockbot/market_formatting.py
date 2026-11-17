@@ -7,6 +7,32 @@ def format_value(val: float) -> str:
     return f"{val / 10_000:.2f}萬"
 
 
+def format_volume_lots(info: QuoteInfo) -> str:
+    """個股當日累計成交量文字（如「12,345 張」）；指數或無資料時回傳空字串。"""
+    vol = info.get("volume")
+    if info.get("is_index") or vol is None:
+        return ""
+    return f"{int(vol):,} 張"
+
+
+def format_bid_ask(info: QuoteInfo) -> str:
+    """內外盤文字，例如「🔻 外盤 5,971 / 內盤 10,874（賣方強）」。
+    外盤佔內外盤合計 ≥ 55% 為買方強、≤ 45% 為賣方強，其餘為多空均衡。
+    指數或無資料時回傳空字串。
+    """
+    ask, bid = info.get("vol_at_ask"), info.get("vol_at_bid")
+    if info.get("is_index") or ask is None or bid is None or ask + bid <= 0:
+        return ""
+    ratio = ask / (ask + bid)
+    if ratio >= 0.55:
+        icon, label = "🔺", "買方強"
+    elif ratio <= 0.45:
+        icon, label = "🔻", "賣方強"
+    else:
+        icon, label = "⚖️", "多空均衡"
+    return f"{icon} 外盤 {int(ask):,} / 內盤 {int(bid):,}（{label}）"
+
+
 def format_stock_message(info: QuoteInfo) -> str:
     sym = info["symbol"]
 

@@ -13,14 +13,21 @@ from .market_data import (
     get_stock_info,
     get_stock_list,
 )
-from .market_formatting import format_stock_message, format_value
+from .market_formatting import (
+    format_bid_ask,
+    format_stock_message,
+    format_value,
+    format_volume_lots,
+)
 from .market_search import search_by_name
 
 
 __all__ = [
     "SECTOR_CODE_MAP",
+    "format_bid_ask",
     "format_stock_message",
     "format_value",
+    "format_volume_lots",
     "get_candles",
     "get_index_list",
     "get_sector_data",

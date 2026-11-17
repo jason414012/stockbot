@@ -165,18 +165,24 @@ def get_stock_info(symbol: str) -> QuoteInfo:
         return _get_index_quote(sym)
 
     data = state.stock.intraday.quote(symbol=sym)
+    total = data["total"]
+    # 興櫃（ESB）成交量單位為股，換算成張
+    unit = 1000 if data["market"] == "ESB" else 1
+
+    def _lots(key: str) -> float | None:
+        v = total.get(key)
+        return v / unit if v is not None else None
+
     return {
         "symbol": sym,
         "name": data["name"],
         "price": data["lastTrade"]["price"],
         "change": data["change"],
         "change_percent": data["changePercent"],
-        "volume": (
-            data["total"]["tradeVolume"] / 1000
-            if data["market"] == "ESB"
-            else data["total"]["tradeVolume"]
-        ),
-        "value": data["total"]["tradeValue"],
+        "volume": total["tradeVolume"] / unit,
+        "vol_at_ask": _lots("tradeVolumeAtAsk"),
+        "vol_at_bid": _lots("tradeVolumeAtBid"),
+        "value": total["tradeValue"],
         "is_index": False,
         "date": data.get("date"),
         "open": data.get("openPrice"),

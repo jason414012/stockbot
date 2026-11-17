@@ -5,7 +5,7 @@ from discord.ext import tasks
 
 from .. import state
 from ..config import ALERT_CHANNEL_ID, TW, VOLATILITY_THRESHOLD_PCT
-from ..data import is_trading_hours
+from ..data import format_volume_lots, is_trading_hours
 from ..db import delete_alert, list_all_alerts
 from ..domain.alerts import is_price_alert_triggered, is_volatile
 from ..market_types import QuoteInfo
@@ -30,19 +30,19 @@ async def price_alert_scan():
         return
 
     symbols = list({a["symbol"] for a in alerts})
-    prices: dict[str, float] = {}
+    infos: dict[str, QuoteInfo] = {}
     for sym in symbols:
         try:
-            info = await get_stock_info_async(sym)
-            prices[sym] = info["price"]
+            infos[sym] = await get_stock_info_async(sym)
         except Exception:
             pass
 
     for alert in alerts:
         sym = alert["symbol"]
-        price = prices.get(sym)
-        if price is None:
+        info = infos.get(sym)
+        if info is None:
             continue
+        price = info["price"]
         try:
             triggered = is_price_alert_triggered(alert["direction"], price, alert["target"])
         except ValueError:
@@ -56,11 +56,15 @@ async def price_alert_scan():
         try:
             direction_str = "突破" if alert["direction"] == "above" else "跌破"
             now_str = datetime.now(TW).strftime("%Y/%m/%d %H:%M")
-            await alert_channel.send(
+            msg = (
                 f'🔔 <@{alert["user_id"]}> **價格警示觸發！** ｜ {now_str}\n'
                 f'`{sym}` 已{direction_str}目標價 **{alert["target"]} 元**\n'
                 f"目前價格：**{price} 元**"
             )
+            vol = format_volume_lots(info)
+            if vol:
+                msg += f"\n成交量：**{vol}**"
+            await alert_channel.send(msg)
         except Exception as e:
             logger.warning("頻道價格警示發送失敗（uid=%s）：%s", alert["user_id"], e)
 
@@ -95,10 +99,14 @@ async def watchlist_volatility_alert():
                 pct = float(info["change_percent"])
                 if is_volatile(pct, VOLATILITY_THRESHOLD_PCT):
                     direction = "🔺" if pct > 0 else "🔻"
-                    alerts.append(
+                    line = (
                         f'{direction} **{info["name"]}（{sym}）** '
                         f'漲跌幅 `{pct:+.2f}%`，現價 `{info["price"]} 元`'
                     )
+                    vol = format_volume_lots(info)
+                    if vol:
+                        line += f"，成交量 `{vol}`"
+                    alerts.append(line)
             except Exception:
                 pass
 
