@@ -94,7 +94,8 @@ async def watchlist_volatility_alert():
         except Exception as e:
             logger.warning("波動警示報價取得失敗（%s）：%r", sym, e)
 
-    for uid, symbols in state.watchlist.items():
+    # 迴圈內有 await，期間 /watch add 可能新增使用者，先取快照避免 dict 改變大小
+    for uid, symbols in list(state.watchlist.items()):
         if not symbols:
             continue
         alerts = []

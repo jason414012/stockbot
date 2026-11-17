@@ -210,6 +210,23 @@ class AutoNewsPushTest(PushTestBase):
         self.assertIn("央行宣布降息", calls)
         self.assertTrue(calls["央行宣布降息"].startswith(self.HEADER))
 
+    def test_failed_send_skips_item_and_keeps_pushing(self):
+        # 單則發送失敗不可中斷推播（例外會終止 tasks.loop），且失敗那則不每分鐘重送
+        real_send = self.channel.send
+
+        async def flaky_send(content=None, embed=None):
+            if embed is not None and embed.title == "央行宣布降息":
+                raise RuntimeError("bad embed")
+            await real_send(content, embed)
+
+        with mock.patch.object(self.channel, "send", flaky_send), \
+                self.assertLogs(news_tasks.logger, "WARNING"):
+            self.run_push()
+            self.run_push()
+        titles = [t for _, t in self.channel.calls]
+        self.assertEqual(titles.count("一般新聞"), 1)
+        self.assertIn("b", state.pushed_news_ids)
+
     def test_breaking_news_scan_task_removed(self):
         # 舊的獨立速報任務會重推 auto_news_push 推過的新聞，不得再存在
         self.assertFalse(hasattr(news_tasks, "breaking_news_scan"))
@@ -326,6 +343,20 @@ class VolatilityAlertTest(AlertTaskTestBase):
         self.assertEqual(len(self.channel.sent), 2)
         self.assertTrue(any("<@1>" in m for m in self.channel.sent))
         self.assertTrue(any("<@2>" in m for m in self.channel.sent))
+
+    def test_watch_add_during_send_does_not_stop_loop(self):
+        # send 期間 /watch add 新增使用者，舊寫法會丟 dict changed size 終止 tasks.loop
+        state.watchlist.update({1: ["2330"], 2: ["2330"]})
+        self.quotes["2330"] = self.quote(4.0)
+        real_send = self.channel.send
+
+        async def send_then_watch_add(content=None, embed=None):
+            state.watchlist.setdefault(3, ["2330"])
+            await real_send(content, embed)
+
+        with mock.patch.object(self.channel, "send", send_then_watch_add):
+            self.run_scan()
+        self.assertEqual(len(self.channel.sent), 2)
 
     def test_failed_send_is_not_marked_and_retried_same_day(self):
         # 發送失敗不可記為已推，否則使用者當日永遠收不到該檔警示

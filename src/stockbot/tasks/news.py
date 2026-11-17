@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from discord.ext import tasks
@@ -13,6 +14,8 @@ from ..news import build_news_embed, fetch_latest_news, is_breaking_news, pick_l
 DIGEST_SIZE = 5          # 晨報／收盤總整理的新聞則數
 DIGEST_GRACE_MIN = 30    # 錯過整點（重啟、卡頓）時允許補發的分鐘數
 
+logger = logging.getLogger(__name__)
+
 
 async def _push_news_to_channel(channel, new_items: list[NewsItem], label: str):
     if not new_items:
@@ -22,11 +25,15 @@ async def _push_news_to_channel(channel, new_items: list[NewsItem], label: str):
     await channel.send(f"📡 **財經新聞快報** ｜ {now_str}　{label}")
     for news in new_items:
         embed = build_news_embed(news)
-        if trading and is_breaking_news(news["title"]):
-            # 標頭與 embed 同一則訊息送出，避免被其他推播插隊或留下孤立標頭
-            await channel.send(content=f"🚨 **【重大新聞速報】** ｜ {now_str}", embed=embed)
-        else:
-            await channel.send(embed=embed)
+        # 單則失敗只記 log 並略過（discord.py 已自動重試限流／5xx），避免例外終止推播迴圈
+        try:
+            if trading and is_breaking_news(news["title"]):
+                # 標頭與 embed 同一則訊息送出，避免被其他推播插隊或留下孤立標頭
+                await channel.send(content=f"🚨 **【重大新聞速報】** ｜ {now_str}", embed=embed)
+            else:
+                await channel.send(embed=embed)
+        except Exception as e:
+            logger.warning("新聞推播失敗，略過（%s）：%r", news["id"], e)
         state.pushed_news_ids.add(news["id"])
         save_pushed_news(news["id"])
 
