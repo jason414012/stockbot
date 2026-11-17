@@ -11,7 +11,7 @@ from ..db import (
     remove_all_positions,
     remove_position,
 )
-from ..domain.trading import calculate_fee, calculate_tax, parse_trade_date
+from ..domain.trading import calculate_fee, calculate_tax, is_etf_symbol, parse_trade_date
 from ..services.portfolio_service import (
     NoPositionError,
     OversellError,
@@ -111,7 +111,7 @@ async def trade_sell(interaction: discord.Interaction, sym: str, price: float, s
         f"本次損益　`{pnl_sign}{position.pnl:,.0f} 元`（{pnl_sign}{position.pnl_pct:.2f}%）\n"
         f"剩餘持股　`{position.shares:,} 股`　（交易日期：{result.date}）"
     )
-    if position.is_daytrade:
+    if position.is_daytrade and not position.is_etf:
         msg += "\n⚡ **偵測到當沖交易**，已套用減半稅率。"
     await interaction.followup.send(msg, ephemeral=True)
 
@@ -195,7 +195,7 @@ async def trade_profit(interaction: discord.Interaction, sym: str = None):
         try:
             info = pre_info if pre_info is not None else get_stock_info(sym)
             cur = info["price"]
-            is_etf = "ETF" in info["name"].upper()
+            is_etf = is_etf_symbol(sym)
             cost_total = pos["avg_cost"] * pos["shares"]
             sell_fee = calculate_fee(cur, pos["shares"])
             sell_tax = calculate_tax(cur, pos["shares"], is_etf, False)

@@ -9,6 +9,7 @@ from stockbot.domain.trading import (
     calculate_tax,
     calc_sell_cost_and_new_avg,
     get_tax_label,
+    is_etf_symbol,
     parse_trade_date,
 )
 
@@ -25,14 +26,20 @@ class TradingRulesTest(unittest.TestCase):
         self.assertEqual(calculate_tax(100, 1000, is_etf=False, is_daytrade=False), 300)
         self.assertEqual(calculate_tax(100, 1000, is_etf=False, is_daytrade=True), 150)
         self.assertEqual(calculate_tax(100, 1000, is_etf=True, is_daytrade=False), 100)
-        self.assertEqual(calculate_tax(100, 1000, is_etf=True, is_daytrade=True), 50)
+        self.assertEqual(calculate_tax(100, 1000, is_etf=True, is_daytrade=True), 100)
         self.assertEqual(calculate_tax(1, 1, is_etf=True, is_daytrade=True), 1)
+
+    def test_etf_detected_by_symbol(self):
+        for sym in ("0050", "00878", "006208", "00679b"):
+            self.assertTrue(is_etf_symbol(sym), sym)
+        for sym in ("2330", "IX0001"):
+            self.assertFalse(is_etf_symbol(sym), sym)
 
     def test_tax_label(self):
         self.assertEqual(get_tax_label(False, False), "一般股票 0.3%")
         self.assertEqual(get_tax_label(False, True), "現股當沖 0.15%")
         self.assertEqual(get_tax_label(True, False), "ETF 0.1%")
-        self.assertEqual(get_tax_label(True, True), "ETF 當沖 0.05%")
+        self.assertEqual(get_tax_label(True, True), "ETF 0.1%，當沖不減半")
 
     def test_lifo_sell_cost_and_remaining_average(self):
         transactions = [

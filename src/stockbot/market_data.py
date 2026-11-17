@@ -21,7 +21,8 @@ def get_stock_list() -> pd.DataFrame:
             resp = state.stock.intraday.tickers(type="EQUITY", exchange=exchange)
             for item in resp.get("data", []):
                 code = item.get("symbol", "")
-                if re.match(r"^\d{4}$", code):
+                # 一般股票 4 碼；ETF 為 00 開頭 4～6 碼，可能帶英文字尾（如 00632R、00679B）
+                if re.match(r"^(\d{4}|00\d{2,4}[A-Z]?)$", code):
                     records.append({"symbol": code, "name": item.get("name", "")})
         except Exception as e:
             logger.warning("無法取得%s清單：%s", label, e)
@@ -99,7 +100,7 @@ def get_sector_data() -> dict[str, list[SectorStock]]:
             resp = state.stock.intraday.tickers(type="EQUITY", exchange=exchange)
             for item in resp.get("data", []):
                 code = item.get("symbol", "")
-                if re.match(r"^\d{4,6}$", code):
+                if re.match(r"^(\d{4,6}|00\d{2,4}[A-Z]?)$", code):
                     sector_code = str(item.get("industry", "")).strip()
                     records.append({
                         "symbol": code,

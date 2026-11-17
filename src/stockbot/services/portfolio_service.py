@@ -8,6 +8,7 @@ from ..domain.trading import (
     SellPositionResult,
     calculate_buy_position,
     calculate_sell_position,
+    is_etf_symbol,
 )
 from ..market_types import QuoteInfo
 
@@ -95,11 +96,7 @@ def record_sell(
     if shares > position["shares"]:
         raise OversellError(shares, position["shares"])
 
-    try:
-        info = quote_lookup(sym)
-        is_etf = "ETF" in info["name"].upper()
-    except Exception:
-        is_etf = False
+    is_etf = is_etf_symbol(sym)
 
     transactions = list_transactions(user_id, sym)
     result = calculate_sell_position(position, transactions, price, shares, tx_date, is_etf)

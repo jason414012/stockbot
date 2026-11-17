@@ -46,16 +46,25 @@ def calculate_fee(price: float, shares: int) -> int:
     return max(round(price * shares * BUY_FEE_RATE), MIN_FEE)
 
 
+def is_etf_symbol(symbol: str) -> bool:
+    """台灣 ETF 代號一律以 00 開頭（如 0050、00878、006208、00679B）。
+    名稱多半不含「ETF」字樣，因此以代號判斷。
+    """
+    return symbol.upper().startswith("00")
+
+
 def calculate_tax(price: float, shares: int, is_etf: bool, is_daytrade: bool) -> int:
-    rate = ETF_TAX_RATE if is_etf else STOCK_TAX_RATE
-    if is_daytrade:
-        rate /= 2
+    """證交稅：一般股票 0.3%、ETF 0.1%；現股當沖減半僅適用一般股票（ETF 當沖仍為 0.1%）。"""
+    if is_etf:
+        rate = ETF_TAX_RATE
+    else:
+        rate = STOCK_TAX_RATE / 2 if is_daytrade else STOCK_TAX_RATE
     return max(int(price * shares * rate), MIN_TAX)
 
 
 def get_tax_label(is_etf: bool, is_daytrade: bool) -> str:
     if is_etf and is_daytrade:
-        return "ETF 當沖 0.05%"
+        return "ETF 0.1%，當沖不減半"
     if is_etf:
         return "ETF 0.1%"
     if is_daytrade:
