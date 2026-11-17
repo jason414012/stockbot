@@ -18,10 +18,15 @@ async def _push_news_to_channel(channel, new_items: list[NewsItem], label: str):
     if not new_items:
         return
     now_str = datetime.now(TW).strftime("%Y/%m/%d %H:%M")
+    trading = is_trading_hours()
     await channel.send(f"📡 **財經新聞快報** ｜ {now_str}　{label}")
     for news in new_items:
         embed = build_news_embed(news)
-        await channel.send(embed=embed)
+        if trading and is_breaking_news(news["title"]):
+            # 標頭與 embed 同一則訊息送出，避免被其他推播插隊或留下孤立標頭
+            await channel.send(content=f"🚨 **【重大新聞速報】** ｜ {now_str}", embed=embed)
+        else:
+            await channel.send(embed=embed)
         state.pushed_news_ids.add(news["id"])
         save_pushed_news(news["id"])
 
@@ -59,7 +64,7 @@ async def auto_news_push():
     channel = state.bot.get_channel(NEWS_CHANNEL_ID)
     if channel is None:
         return
-    news_list = await fetch_latest_news(max_per_source=3)
+    news_list = await fetch_latest_news(max_per_source=5)
     new_items = [n for n in news_list if n["id"] not in state.pushed_news_ids]
     await _push_news_to_channel(channel, new_items, "（即時推播）")
 
@@ -72,33 +77,3 @@ async def market_open_push():
 @tasks.loop(minutes=1)
 async def market_close_push():
     await _scheduled_news_push(13, 30, "market_close_pushed", "🔔 **收盤總整理**")
-
-
-@tasks.loop(minutes=5)
-async def breaking_news_scan():
-    if not is_trading_hours():
-        return
-    channel = state.bot.get_channel(NEWS_CHANNEL_ID)
-    if channel is None:
-        return
-
-    today = datetime.now(TW).date()
-    if state.breaking_last_reset_date != today:
-        state.breaking_checked_ids.clear()
-        state.breaking_last_reset_date = today
-
-    news_list = await fetch_latest_news(max_per_source=5)
-    for news in news_list:
-        if news["id"] in state.breaking_checked_ids:
-            continue
-        state.breaking_checked_ids.add(news["id"])
-
-        if not is_breaking_news(news["title"]):
-            continue
-
-        now_str = datetime.now(TW).strftime("%Y/%m/%d %H:%M")
-        await channel.send(f"🚨 **【重大新聞速報】** ｜ {now_str}")
-        embed = build_news_embed(news)
-        await channel.send(embed=embed)
-        state.pushed_news_ids.add(news["id"])
-        save_pushed_news(news["id"])

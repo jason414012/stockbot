@@ -33,5 +33,5 @@ index_list_date:  date | None         = None
 sector_cache: dict[str, list[SectorStock]] | None = None
 sector_cache_date: date | None              = None
 
-breaking_checked_ids: set[str] = set()
-breaking_last_reset_date: date | None = None
+volatility_alerted: set[tuple[int, str]] = set()
+volatility_last_reset_date: date | None = None

@@ -8,7 +8,7 @@ os.environ.setdefault("FUGLE_API_KEY", "test-key")
 
 
 class TaskRegistryTest(unittest.TestCase):
-    def test_seven_background_tasks_are_registered_with_before_loop(self):
+    def test_six_background_tasks_are_registered_with_before_loop(self):
         try:
             from stockbot import tasks
         except ModuleNotFoundError as exc:
@@ -20,14 +20,13 @@ class TaskRegistryTest(unittest.TestCase):
             "auto_news_push",
             "market_open_push",
             "market_close_push",
-            "breaking_news_scan",
             "price_alert_scan",
             "watchlist_volatility_alert",
             "weekly_report_push",
         ]
 
         self.assertEqual([loop.coro.__name__ for loop in tasks.TASK_LOOPS], expected_names)
-        self.assertEqual(len(tasks.TASK_LOOPS), 7)
+        self.assertEqual(len(tasks.TASK_LOOPS), 6)
         self.assertTrue(all(getattr(loop, "_before_loop", None) is not None for loop in tasks.TASK_LOOPS))
 
 

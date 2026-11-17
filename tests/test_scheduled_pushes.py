@@ -17,6 +17,7 @@ try:
     import pandas as pd
     from stockbot import db, state
     from stockbot.news import pick_latest_news
+    from stockbot.tasks import alerts as alert_tasks
     from stockbot.tasks import news as news_tasks
     from stockbot.tasks import reports
 except ModuleNotFoundError as exc:  # pragma: no cover - optional runtime deps
@@ -40,8 +41,10 @@ class FakeDatetime(datetime):
 class FakeChannel:
     def __init__(self):
         self.sent: list = []
+        self.calls: list[tuple] = []  # 每次 send 的 (content, embed 標題)
 
     async def send(self, content=None, embed=None):
+        self.calls.append((content, embed.title if embed is not None else None))
         self.sent.append(content if content is not None else embed.title)
 
 
@@ -138,6 +141,180 @@ class DigestTest(PushTestBase):
         self.run_open(tw(2026, 11, 16, 9, 30))
         self.run_open(tw(2026, 11, 21, 9, 0))  # Saturday
         self.assertEqual(self.channel.sent, [])
+
+
+class AutoNewsPushTest(PushTestBase):
+    """重大新聞速報併入 auto_news_push：每則新聞只推一次，盤中才加速報標頭。"""
+    HEADER = "🚨 **【重大新聞速報】**"
+    NEWS = [
+        {"id": "b", "title": "央行宣布降息", "link": "", "source": "s",
+         "category": "財經", "published": "", "ts": 2},
+        {"id": "n", "title": "一般新聞", "link": "", "source": "s",
+         "category": "財經", "published": "", "ts": 1},
+    ]
+
+    def setUp(self):
+        super().setUp()
+
+        async def fake_fetch(max_per_source=5):
+            return self.NEWS
+
+        self.trading = True
+        for attr, value in [("fetch_latest_news", fake_fetch),
+                            ("is_trading_hours", lambda: self.trading)]:
+            p = mock.patch.object(news_tasks, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def run_push(self):
+        asyncio.run(news_tasks.auto_news_push.coro())
+
+    def news_calls(self) -> dict:
+        """embed 標題 → 同一則訊息的 content（無標頭為 None）。"""
+        return {title: content for content, title in self.channel.calls if title is not None}
+
+    def test_breaking_header_during_trading_hours(self):
+        self.run_push()
+        calls = self.news_calls()
+        # 標頭與重大新聞 embed 必須在同一則訊息，一般新聞不加
+        self.assertTrue(calls["央行宣布降息"].startswith(self.HEADER))
+        self.assertIsNone(calls["一般新聞"])
+        self.assertFalse(any(c and c.startswith(self.HEADER) and t is None
+                             for c, t in self.channel.calls))
+
+    def test_no_breaking_header_after_hours(self):
+        self.trading = False
+        self.run_push()
+        self.assertIsNone(self.news_calls()["央行宣布降息"])
+        self.assertFalse(any(c and c.startswith(self.HEADER) for c, _ in self.channel.calls))
+
+    def test_each_news_pushed_only_once(self):
+        self.run_push()
+        self.run_push()
+        titles = [t for _, t in self.channel.calls]
+        self.assertEqual(titles.count("央行宣布降息"), 1)
+        self.assertEqual(titles.count("一般新聞"), 1)
+        self.assertEqual(sum(bool(c and c.startswith(self.HEADER)) for c, _ in self.channel.calls), 1)
+
+    def test_breaking_news_scan_task_removed(self):
+        # 舊的獨立速報任務會重推 auto_news_push 推過的新聞，不得再存在
+        self.assertFalse(hasattr(news_tasks, "breaking_news_scan"))
+
+
+class AlertTaskTestBase(PushTestBase):
+    def setUp(self):
+        super().setUp()
+        self.quotes: dict = {}
+
+        async def fake_quote(sym):
+            q = self.quotes[sym]
+            if isinstance(q, Exception):
+                raise q
+            return q
+
+        FakeDatetime.current = tw(2026, 11, 16, 10, 0)
+        for target, attr, value in [
+            (alert_tasks, "get_stock_info_async", fake_quote),
+            (alert_tasks, "is_trading_hours", lambda **kw: True),
+            (alert_tasks, "datetime", FakeDatetime),
+            (state, "volatility_alerted", set()),
+            (state, "volatility_last_reset_date", None),
+        ]:
+            p = mock.patch.object(target, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    @staticmethod
+    def quote(pct, price=100.0, name="n"):
+        return {"name": name, "price": price, "change_percent": pct, "volume": 1000}
+
+
+class VolatilityAlertTest(AlertTaskTestBase):
+    def run_scan(self, now=None):
+        if now is not None:
+            FakeDatetime.current = now
+        asyncio.run(alert_tasks.watchlist_volatility_alert.coro())
+
+    def test_alerts_once_per_user_symbol_per_day(self):
+        state.watchlist.update({1: ["2330"]})
+        self.quotes["2330"] = self.quote(4.0)
+        self.run_scan()
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertIn("2330", self.channel.sent[0])
+        self.assertIn((1, "2330"), state.volatility_alerted)
+
+        # 同日下一輪仍漲 4%：不再 @ 使用者，且整則訊息不發
+        self.run_scan(tw(2026, 11, 16, 10, 5))
+        self.assertEqual(len(self.channel.sent), 1)
+
+    def test_repeat_round_only_sends_new_symbols(self):
+        state.watchlist.update({1: ["2330", "2317"]})
+        self.quotes.update({"2330": self.quote(4.0), "2317": self.quote(1.0)})
+        self.run_scan()
+        self.quotes["2317"] = self.quote(-5.0)
+        self.run_scan(tw(2026, 11, 16, 10, 5))
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertIn("2317", self.channel.sent[1])
+        self.assertNotIn("2330", self.channel.sent[1])
+
+    def test_resets_next_day(self):
+        state.watchlist.update({1: ["2330"]})
+        self.quotes["2330"] = self.quote(4.0)
+        self.run_scan()
+        self.run_scan(tw(2026, 11, 17, 9, 5))
+        self.assertEqual(len(self.channel.sent), 2)
+
+    def test_each_user_alerted_separately(self):
+        state.watchlist.update({1: ["2330"], 2: ["2330"]})
+        self.quotes["2330"] = self.quote(4.0)
+        self.run_scan()
+        self.run_scan(tw(2026, 11, 16, 10, 5))
+        self.assertEqual(len(self.channel.sent), 2)
+        self.assertTrue(any("<@1>" in m for m in self.channel.sent))
+        self.assertTrue(any("<@2>" in m for m in self.channel.sent))
+
+    def test_failed_send_is_not_marked_and_retried_same_day(self):
+        # 發送失敗不可記為已推，否則使用者當日永遠收不到該檔警示
+        state.watchlist.update({1: ["2330"]})
+        self.quotes["2330"] = self.quote(4.0)
+        real_send = self.channel.send
+        fails = [RuntimeError("discord down")]
+
+        async def flaky_send(content=None, embed=None):
+            if fails:
+                raise fails.pop()
+            await real_send(content, embed)
+
+        with mock.patch.object(self.channel, "send", flaky_send), \
+                self.assertLogs(alert_tasks.logger, "WARNING"):
+            self.run_scan()
+            self.assertNotIn((1, "2330"), state.volatility_alerted)
+            self.run_scan(tw(2026, 11, 16, 10, 5))
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertIn((1, "2330"), state.volatility_alerted)
+
+    def test_quote_failure_logs_symbol_and_continues(self):
+        state.watchlist.update({1: ["9999", "2330"]})
+        self.quotes.update({"9999": RuntimeError("boom"), "2330": self.quote(4.0)})
+        with self.assertLogs(alert_tasks.logger, "WARNING") as logs:
+            self.run_scan()
+        self.assertTrue(any("9999" in line and "boom" in line for line in logs.output))
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertIn("2330", self.channel.sent[0])
+
+
+class PriceAlertScanTest(AlertTaskTestBase):
+    def test_quote_failure_logs_symbol_and_other_alerts_still_fire(self):
+        db.add_alert(1, "9999", 50.0, "above")
+        db.add_alert(1, "2330", 50.0, "above")
+        self.quotes.update({"9999": RuntimeError("boom"), "2330": self.quote(0.0, price=60.0)})
+        with self.assertLogs(alert_tasks.logger, "WARNING") as logs:
+            asyncio.run(alert_tasks.price_alert_scan.coro())
+        self.assertTrue(any("9999" in line and "boom" in line for line in logs.output))
+        self.assertEqual(len(self.channel.sent), 1)
+        self.assertIn("2330", self.channel.sent[0])
+        # 報價失敗的警示不可被刪除，下次仍要掃描
+        self.assertEqual([a["symbol"] for a in db.list_all_alerts()], ["9999"])
 
 
 class WeeklyReportTest(PushTestBase):

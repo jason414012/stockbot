@@ -34,8 +34,8 @@ async def price_alert_scan():
     for sym in symbols:
         try:
             infos[sym] = await get_stock_info_async(sym)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("價格警示報價取得失敗（%s）：%s", sym, e)
 
     for alert in alerts:
         sym = alert["symbol"]
@@ -79,19 +79,28 @@ async def watchlist_volatility_alert():
         logger.warning("找不到警示頻道，請確認 ALERT_CHANNEL_ID 設定是否正確。")
         return
 
+    # 每人每檔每個台北日只推一次（僅存記憶體，重啟當日可能補發一次）
+    today = datetime.now(TW).date()
+    if state.volatility_last_reset_date != today:
+        state.volatility_alerted.clear()
+        state.volatility_last_reset_date = today
+
     all_symbols = list({sym for symbols in state.watchlist.values() for sym in symbols})
     prices_info: dict[str, QuoteInfo] = {}
     for sym in all_symbols:
         try:
             prices_info[sym] = await get_stock_info_async(sym)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("波動警示報價取得失敗（%s）：%s", sym, e)
 
     for uid, symbols in state.watchlist.items():
         if not symbols:
             continue
         alerts = []
+        alerted_keys = []
         for sym in symbols:
+            if (uid, sym) in state.volatility_alerted:
+                continue
             info = prices_info.get(sym)
             if info is None:
                 continue
@@ -107,8 +116,9 @@ async def watchlist_volatility_alert():
                     if vol:
                         line += f"，成交量 `{vol}`"
                     alerts.append(line)
-            except Exception:
-                pass
+                    alerted_keys.append((uid, sym))
+            except Exception as e:
+                logger.warning("波動警示處理失敗（%s）：%s", sym, e)
 
         if not alerts:
             continue
@@ -119,5 +129,6 @@ async def watchlist_volatility_alert():
                 + "\n".join(alerts)
             )
             await alert_channel.send(msg)
+            state.volatility_alerted.update(alerted_keys)
         except Exception as e:
             logger.warning("自選股波動頻道通知失敗（uid=%s）：%s", uid, e)

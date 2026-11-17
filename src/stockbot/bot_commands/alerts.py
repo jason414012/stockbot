@@ -4,7 +4,7 @@ from discord import app_commands
 from ..config import MAX_ALERTS_PER_SYMBOL
 from ..data import get_stock_info
 from ..db import add_alert, list_user_alerts, remove_alert
-from ..domain.alerts import get_alert_direction
+from ..domain.alerts import get_alert_direction, validate_alert_target
 
 
 alert_group = app_commands.Group(name="alert", description="價格到價警示管理")
@@ -22,6 +22,12 @@ async def alert_set(interaction: discord.Interaction, sym: str, target: float):
         await interaction.followup.send("查無此股票／指數，請確認代號！")
         return
 
+    try:
+        validate_alert_target(target, cur)
+    except ValueError as e:
+        await interaction.followup.send(f"{e}（目前值：`{cur}`）")
+        return
+
     direction = get_alert_direction(target, cur)
     dir_str = f"突破 `{target}`" if direction == "above" else f"跌破 `{target}`"
 
@@ -32,7 +38,7 @@ async def alert_set(interaction: discord.Interaction, sym: str, target: float):
 
     add_alert(interaction.user.id, sym, target, direction)
     await interaction.followup.send(
-        f"✅ 已設定警示！`{sym}` {dir_str} 時將 DM 通知您。\n"
+        f"✅ 已設定警示！`{sym}` {dir_str} 時將在警示頻道通知您。\n"
         f"目前值：`{cur}`"
     )
 
